@@ -5,8 +5,8 @@ on:
       - 'v*'
 
 env:
-  FAKE_READER_IMAGE_REPO: ghcr.io/open-policy-agent/fake-reader
-  FAKE_SUBSCRIBER_IMAGE_REPO: ghcr.io/open-policy-agent/fake-subscriber
+  FAKE_READER_IMAGE_REPO: ghcr.io/abhisheksheth28/fake-reader
+  FAKE_SUBSCRIBER_IMAGE_REPO: ghcr.io/abhisheksheth28/fake-subscriber
 
 permissions: read-all
 
@@ -17,7 +17,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'open-policy-agent/gatekeeper'
+    if: startsWith(github.ref, 'refs/tags/v')
     timeout-minutes: 30
     steps:
       - name: Harden Runner
@@ -44,6 +44,7 @@ jobs:
           if ! docker manifest inspect ${{ env.FAKE_READER_IMAGE_REPO }}:${TAG} > /dev/null 2>&1
           then
             make docker-buildx-fake-reader-release \
+              GHCR_FAKE_READER_REPOSITORY=${{ env.FAKE_READER_IMAGE_REPO }} \
               VERSION=${TAG} \
               PLATFORM="linux/amd64,linux/arm64" \
               OUTPUT_TYPE=type=registry \
@@ -55,6 +56,7 @@ jobs:
           if ! docker manifest inspect ${{ env.FAKE_SUBSCRIBER_IMAGE_REPO }}:${TAG} > /dev/null 2>&1
           then
             make docker-buildx-fake-subscriber-release \
+              GHCR_FAKE_SUBSCRIBER_REPOSITORY=${{ env.FAKE_SUBSCRIBER_IMAGE_REPO }} \
               VERSION=${TAG} \
               PLATFORM="linux/amd64,linux/arm64" \
               OUTPUT_TYPE=type=registry \
