@@ -53,6 +53,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -96,6 +97,8 @@ type Adder struct {
 	Tracker          *readiness.Tracker
 	GetPod           func(context.Context) (*corev1.Pod, error)
 	ProcessExcluder  *process.Excluder
+	PodStatusWriter  client.Client
+	PodStatusCache   cache.Cache
 	// IfWatching allows the reconciler to only execute functions if a constraint
 	// template is currently being watched. It is designed to be atomic to avoid
 	// race conditions between the constraint controller and the constraint template
@@ -127,14 +130,14 @@ func (a *Adder) Add(mgr manager.Manager) error {
 		return err
 	}
 
-	r := newReconciler(mgr, a.CFClient, reporter, a.ConstraintsCache, a.Tracker)
+	r := newReconciler(mgr, a.CFClient, reporter, a.ConstraintsCache, a.Tracker, a.PodStatusWriter, a.PodStatusCache)
 	if a.GetPod != nil {
 		r.getPod = a.GetPod
 	}
 	if a.IfWatching != nil {
 		r.ifWatching = a.IfWatching
 	}
-	return add(mgr, r, a.Events)
+	return add(mgr, r, a.Events, a.PodStatusCache)
 }
 
 type ConstraintsCache struct {
@@ -154,12 +157,16 @@ func newReconciler(
 	reporter StatsReporter,
 	constraintsCache *ConstraintsCache,
 	tracker *readiness.Tracker,
+	podStatusWriter client.Client,
+	podStatusCache cache.Cache,
 ) *ReconcileConstraint {
 	r := &ReconcileConstraint{
 		// Separate reader and writer because manager's default client bypasses the cache for unstructured resources.
-		writer:       mgr.GetClient(),
-		statusClient: mgr.GetClient(),
-		reader:       mgr.GetCache(),
+		writer:          mgr.GetClient(),
+		statusClient:    mgr.GetClient(),
+		reader:          mgr.GetCache(),
+		podStatusWriter: podStatusWriter,
+		podStatusCache:  podStatusCache,
 
 		scheme:           mgr.GetScheme(),
 		cfClient:         cfClient,
@@ -175,7 +182,7 @@ func newReconciler(
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler.
-func add(mgr manager.Manager, r reconcile.Reconciler, events <-chan event.GenericEvent) error {
+func add(mgr manager.Manager, r reconcile.Reconciler, events <-chan event.GenericEvent, podStatusCache cache.Cache) error {
 	// Create a new controller
 	c, err := controller.New("constraint-controller", mgr, controller.Options{Reconciler: r})
 	if err != nil {
@@ -192,7 +199,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler, events <-chan event.Generi
 	}
 
 	err = c.Watch(
-		source.Kind(mgr.GetCache(), &constraintstatusv1beta1.ConstraintPodStatus{}, handler.TypedEnqueueRequestsFromMapFunc(constraintstatus.PodStatusToConstraintMapper(true, util.EventPackerMapFunc()))))
+		source.Kind(podStatusCache, &constraintstatusv1beta1.ConstraintPodStatus{}, handler.TypedEnqueueRequestsFromMapFunc(constraintstatus.PodStatusToConstraintMapper(true, util.EventPackerMapFunc()))))
 	if err != nil {
 		return err
 	}
@@ -216,9 +223,11 @@ var _ reconcile.Reconciler = &ReconcileConstraint{}
 
 // ReconcileConstraint reconciles an arbitrary constraint object described by Kind.
 type ReconcileConstraint struct {
-	reader       client.Reader
-	writer       client.Writer
-	statusClient client.StatusClient
+	reader          client.Reader
+	writer          client.Writer
+	statusClient    client.StatusClient
+	podStatusWriter client.Client
+	podStatusCache  cache.Cache
 
 	scheme           *runtime.Scheme
 	cfClient         *constraintclient.Client
@@ -319,7 +328,7 @@ func (r *ReconcileConstraint) Reconcile(ctx context.Context, request reconcile.R
 		}
 
 		status.Status.Enforced = true
-		if err = r.writer.Update(ctx, status); err != nil {
+		if err = r.podStatusWriter.Update(ctx, status); err != nil {
 			return reconcile.Result{Requeue: true}, nil
 		}
 
@@ -362,7 +371,7 @@ func (r *ReconcileConstraint) Reconcile(ctx context.Context, request reconcile.R
 		statusObj := &constraintstatusv1beta1.ConstraintPodStatus{}
 		statusObj.SetName(sName)
 		statusObj.SetNamespace(util.GetNamespace())
-		if err := r.writer.Delete(ctx, statusObj); err != nil {
+		if err := r.podStatusWriter.Delete(ctx, statusObj); err != nil {
 			if !apierrors.IsNotFound(err) {
 				return reconcile.Result{}, err
 			}
@@ -448,7 +457,7 @@ func (r *ReconcileConstraint) getOrCreatePodStatus(ctx context.Context, constrai
 		return nil, err
 	}
 	key := types.NamespacedName{Name: sName, Namespace: util.GetNamespace()}
-	if err := r.reader.Get(ctx, key, statusObj); err != nil {
+	if err := r.podStatusCache.Get(ctx, key, statusObj); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return nil, err
 		}
@@ -463,7 +472,7 @@ func (r *ReconcileConstraint) getOrCreatePodStatus(ctx context.Context, constrai
 	if err != nil {
 		return nil, err
 	}
-	if err := r.writer.Create(ctx, statusObj); err != nil {
+	if err := r.podStatusWriter.Create(ctx, statusObj); err != nil {
 		return nil, err
 	}
 	return statusObj, nil
@@ -526,7 +535,7 @@ func (r *ReconcileConstraint) cacheConstraint(ctx context.Context, instance *uns
 
 func (r *ReconcileConstraint) reportErrorOnConstraintStatus(ctx context.Context, status *constraintstatusv1beta1.ConstraintPodStatus, err error, message string) error {
 	status.Status.Errors = append(status.Status.Errors, constraintstatusv1beta1.Error{Message: fmt.Sprintf("%s: %s", message, err)})
-	if err2 := r.writer.Update(ctx, status); err2 != nil {
+	if err2 := r.podStatusWriter.Update(ctx, status); err2 != nil {
 		log.Error(err2, message, "error", "could not update constraint status")
 		return errorpkg.Wrapf(err, "%s", fmt.Sprintf("%s, could not update constraint status: %s", message, err2))
 	}
@@ -602,7 +611,7 @@ func (r *ReconcileConstraint) manageVAPB(ctx context.Context, enforcementAction 
 					if t.After(time.Now()) {
 						wait := time.Until(t)
 						updateEnforcementPointStatus(status, util.VAPEnforcementPoint, WaitVAPBState, fmt.Sprintf("waiting for %s before generating ValidatingAdmissionPolicyBinding to make sure api-server has cached constraint CRD", wait), instance.GetGeneration())
-						return wait, r.writer.Update(ctx, status)
+						return wait, r.podStatusWriter.Update(ctx, status)
 					}
 				}
 			}
@@ -701,7 +710,7 @@ func (r *ReconcileConstraint) manageVAPB(ctx context.Context, enforcementAction 
 			r.reporter.DeleteVAPBStatus(vapBindingKey)
 		}
 	}
-	return noDelay, r.writer.Update(ctx, status)
+	return noDelay, r.podStatusWriter.Update(ctx, status)
 }
 
 func (r *ReconcileConstraint) deleteVAPBIfOwned(ctx context.Context, vapBinding client.Object, instance *unstructured.Unstructured, vapBindingName string) error {

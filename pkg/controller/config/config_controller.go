@@ -40,6 +40,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -152,9 +153,11 @@ func (e *ChannelFullError) Temporary() bool {
 }
 
 type Adder struct {
-	Tracker      *readiness.Tracker
-	CacheManager *cm.CacheManager
-	CtEvents     chan<- event.GenericEvent
+	Tracker         *readiness.Tracker
+	CacheManager    *cm.CacheManager
+	CtEvents        chan<- event.GenericEvent
+	PodStatusWriter client.Client
+	PodStatusCache  cache.Cache
 	// GetPod returns an instance of the currently running Gatekeeper pod
 	GetPod func(context.Context) (*corev1.Pod, error)
 }
@@ -162,12 +165,12 @@ type Adder struct {
 // Add creates a new ConfigController and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
 func (a *Adder) Add(mgr manager.Manager) error {
-	r, err := newReconciler(mgr, a.CacheManager, a.Tracker, a.GetPod, a.CtEvents)
+	r, err := newReconciler(mgr, a.CacheManager, a.Tracker, a.GetPod, a.CtEvents, a.PodStatusWriter, a.PodStatusCache)
 	if err != nil {
 		return err
 	}
 
-	return add(mgr, r)
+	return add(mgr, r, a.PodStatusCache)
 }
 
 func (a *Adder) InjectTracker(t *readiness.Tracker) {
@@ -186,26 +189,33 @@ func (a *Adder) InjectConstraintTemplateEvent(ctEvents chan event.GenericEvent) 
 	a.CtEvents = ctEvents
 }
 
+func (a *Adder) InjectPodStatusClients(writer client.Client, podStatusCache cache.Cache) {
+	a.PodStatusWriter = writer
+	a.PodStatusCache = podStatusCache
+}
+
 // newReconciler returns a new reconcile.Reconciler.
-func newReconciler(mgr manager.Manager, cm *cm.CacheManager, tracker *readiness.Tracker, getPod func(context.Context) (*corev1.Pod, error), ctEvents chan<- event.GenericEvent) (*ReconcileConfig, error) {
+func newReconciler(mgr manager.Manager, cm *cm.CacheManager, tracker *readiness.Tracker, getPod func(context.Context) (*corev1.Pod, error), ctEvents chan<- event.GenericEvent, podStatusWriter client.Client, podStatusCache cache.Cache) (*ReconcileConfig, error) {
 	if cm == nil {
 		return nil, fmt.Errorf("cacheManager must be non-nil")
 	}
 
 	return &ReconcileConfig{
-		reader:       mgr.GetCache(),
-		writer:       mgr.GetClient(),
-		statusClient: mgr.GetClient(),
-		scheme:       mgr.GetScheme(),
-		cacheManager: cm,
-		tracker:      tracker,
-		getPod:       getPod,
-		ctEvents:     ctEvents,
+		reader:          mgr.GetCache(),
+		writer:          mgr.GetClient(),
+		statusClient:    mgr.GetClient(),
+		scheme:          mgr.GetScheme(),
+		cacheManager:    cm,
+		tracker:         tracker,
+		getPod:          getPod,
+		ctEvents:        ctEvents,
+		podStatusWriter: podStatusWriter,
+		podStatusCache:  podStatusCache,
 	}, nil
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler.
-func add(mgr manager.Manager, r reconcile.Reconciler) error {
+func add(mgr manager.Manager, r reconcile.Reconciler, podStatusCache cache.Cache) error {
 	// Create a new controller
 	c, err := controller.New(ctrlName, mgr, controller.Options{Reconciler: r})
 	if err != nil {
@@ -219,7 +229,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	}
 
 	err = c.Watch(
-		source.Kind(mgr.GetCache(), &statusv1beta1.ConfigPodStatus{}, handler.TypedEnqueueRequestsFromMapFunc(configstatus.PodStatusToConfigMapper(true))))
+		source.Kind(podStatusCache, &statusv1beta1.ConfigPodStatus{}, handler.TypedEnqueueRequestsFromMapFunc(configstatus.PodStatusToConfigMapper(true))))
 	if err != nil {
 		return err
 	}
@@ -231,9 +241,11 @@ var _ reconcile.Reconciler = &ReconcileConfig{}
 
 // ReconcileConfig reconciles a Config object.
 type ReconcileConfig struct {
-	reader       client.Reader
-	writer       client.Writer
-	statusClient client.StatusClient
+	reader          client.Reader
+	writer          client.Writer
+	statusClient    client.StatusClient
+	podStatusWriter client.Client
+	podStatusCache  cache.Cache
 
 	scheme       *runtime.Scheme
 	cacheManager *cm.CacheManager
@@ -351,7 +363,7 @@ func (r *ReconcileConfig) deleteStatus(ctx context.Context, cfgNamespace string,
 	}
 	status.SetName(sName)
 	status.SetNamespace(util.GetNamespace())
-	if err := r.writer.Delete(ctx, status); err != nil && !apierrors.IsNotFound(err) {
+	if err := r.podStatusWriter.Delete(ctx, status); err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 	return nil
@@ -372,7 +384,7 @@ func (r *ReconcileConfig) updateOrCreatePodStatus(ctx context.Context, cfg *conf
 	shouldCreate := true
 	status := &statusv1beta1.ConfigPodStatus{}
 
-	err = r.reader.Get(ctx, types.NamespacedName{Namespace: sNS, Name: sName}, status)
+	err = r.podStatusCache.Get(ctx, types.NamespacedName{Namespace: sNS, Name: sName}, status)
 	switch {
 	case err == nil:
 		shouldCreate = false
@@ -389,9 +401,9 @@ func (r *ReconcileConfig) updateOrCreatePodStatus(ctx context.Context, cfg *conf
 	status.Status.ObservedGeneration = cfg.GetGeneration()
 
 	if shouldCreate {
-		return r.writer.Create(ctx, status)
+		return r.podStatusWriter.Create(ctx, status)
 	}
-	return r.writer.Update(ctx, status)
+	return r.podStatusWriter.Update(ctx, status)
 }
 
 func (r *ReconcileConfig) newConfigStatus(pod *corev1.Pod, cfg *configv1alpha1.Config) (*statusv1beta1.ConfigPodStatus, error) {

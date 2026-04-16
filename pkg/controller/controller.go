@@ -39,7 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -50,6 +50,10 @@ var (
 	debugUseFakePod = flag.Bool("debug-use-fake-pod", false, "Use a fake pod name so the Gatekeeper executable can be run outside of Kubernetes")
 	remoteCluster   = flag.Bool("enable-remote-cluster", false, "(alpha) Enable remote cluster mode where Gatekeeper operates against a target cluster specified via --kubeconfig while running in the local cluster. Mutually exclusive with --debug-use-fake-pod.")
 )
+
+func RemoteClusterEnabled() bool {
+	return *remoteCluster
+}
 
 type Injector interface {
 	InjectTracker(tracker *readiness.Tracker)
@@ -101,6 +105,10 @@ type WebhookConfigCacheInjector interface {
 	InjectWebhookConfigCache(webhookConfigCache *webhookconfigcache.WebhookConfigCache)
 }
 
+type PodStatusInjector interface {
+	InjectPodStatusClients(writer client.Client, podStatusCache cache.Cache)
+}
+
 // Injectors is a list of adder structs that need injection. We can convert this
 // to an interface once we create controllers for things like data sync.
 var Injectors []Injector
@@ -123,6 +131,14 @@ type Dependencies struct {
 	CacheMgr           *cm.CacheManager
 	CtEvents           chan event.GenericEvent
 	WebhookConfigCache *webhookconfigcache.WebhookConfigCache
+
+	// PodStatusWriter is used for creatae/update/delete of PodStatus resources.
+	// remote: management cluster, non-remote: mgr.GetClient()
+	PodStatusWriter client.Client
+
+	// PodStatusCache is used for reads and watches of PodStatus resources.
+	// remote: management cluster, non-remote: mgr.GetCache()
+	PodStatusCache cache.Cache
 }
 
 type defaultPodGetter struct {
@@ -180,8 +196,16 @@ func AddToManager(m manager.Manager, deps *Dependencies) error {
 		if kubeconfigFlag == nil || kubeconfigFlag.Value.String() == "" {
 			return fmt.Errorf("--enable-remote-cluster requires --kubeconfig to be specified pointing to the target cluster")
 		}
-		// In remote cluster mode, the pod doesn't exist in the target cluster. Skip setting OwnerReferences.
-		util.SetSkipPodOwnerRef(true)
+	}
+
+	// Set up PodStatus infra defaults.
+	// In remote cluster mode, PodStatusWriter and PodStatusCache are configured by main.go to point at the management cluster.
+	// In non-remote mode, fall back to the manager's own client (same cluster).
+	if deps.PodStatusWriter == nil {
+		deps.PodStatusWriter = m.GetClient()
+	}
+	if deps.PodStatusCache == nil {
+		deps.PodStatusCache = m.GetCache()
 	}
 
 	if deps.GetPod == nil {
@@ -201,24 +225,11 @@ func AddToManager(m manager.Manager, deps *Dependencies) error {
 			}
 			deps.GetPod = fakePodGetter
 		} else {
-			// In remote cluster mode, use InClusterConfig to connect to local cluster.
-			var podClient client.Client
-			if *remoteCluster {
-				mgmtConfig, err := rest.InClusterConfig()
-				if err != nil {
-					return fmt.Errorf("--enable-remote-cluster requires in-cluster config for local cluster: %w", err)
-				}
-				podClient, err = client.New(mgmtConfig, client.Options{Scheme: m.GetScheme()})
-				if err != nil {
-					return fmt.Errorf("creating management cluster client: %w", err)
-				}
-			} else {
-				podClient = m.GetClient()
-			}
-
+			// In remote cluster mode, use the PodStatus writer to resolve the pod.
+			// In non-remote mode, the PodStatus writer is the same as the manager's client.
 			podGetter := &defaultPodGetter{
 				scheme: m.GetScheme(),
-				client: podClient,
+				client: deps.PodStatusWriter,
 			}
 			deps.GetPod = podGetter.GetPod
 		}
@@ -275,6 +286,9 @@ func AddToManager(m manager.Manager, deps *Dependencies) error {
 		}
 		if a2, ok := a.(WebhookConfigCacheInjector); ok {
 			a2.InjectWebhookConfigCache(deps.WebhookConfigCache)
+		}
+		if a2, ok := a.(PodStatusInjector); ok {
+			a2.InjectPodStatusClients(deps.PodStatusWriter, deps.PodStatusCache)
 		}
 
 		if err := a.Add(m); err != nil {

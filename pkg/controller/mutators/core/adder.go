@@ -13,6 +13,7 @@ import (
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/readiness"
 	corev1 "k8s.io/api/core/v1"
 	apitypes "k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -45,19 +46,26 @@ type Adder struct {
 	// events related to other mutators. Callers may derive it from Events via
 	// per-controller routing or fan-out, but Events itself may be shared across
 	// controllers while each controller receives its own EventsSource.
-	EventsSource source.Source
-	Reporter     ctrlmutators.StatsReporter
+	EventsSource    source.Source
+	PodStatusWriter client.Client
+	PodStatusCache  cache.Cache
+	Reporter        ctrlmutators.StatsReporter
 }
 
 // Add creates a new Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
 func (a *Adder) Add(mgr manager.Manager) error {
-	r := newReconciler(mgr, a.MutationSystem, a.Tracker, a.GetPod, a.Kind, a.NewMutationObj, a.MutatorFor, a.Events, a.Reporter)
-	return a.add(mgr, r)
+	r := newReconciler(mgr, a.MutationSystem, a.Tracker, a.GetPod, a.Kind, a.NewMutationObj, a.MutatorFor, a.Events, a.PodStatusWriter, a.PodStatusCache, a.Reporter)
+	return a.add(mgr, r, a.PodStatusCache)
+}
+
+func (a *Adder) InjectPodStatusClients(writer client.Client, podStatusCache cache.Cache) {
+	a.PodStatusWriter = writer
+	a.PodStatusCache = podStatusCache
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler.
-func (a *Adder) add(mgr manager.Manager, r *Reconciler) error {
+func (a *Adder) add(mgr manager.Manager, r *Reconciler, podStatusCache cache.Cache) error {
 	if !mutation.Enabled() {
 		return nil
 	}
@@ -78,7 +86,7 @@ func (a *Adder) add(mgr manager.Manager, r *Reconciler) error {
 
 	// Watch for changes to MutatorPodStatuses.
 	err = c.Watch(
-		source.Kind(mgr.GetCache(), &statusv1beta1.MutatorPodStatus{},
+		source.Kind(podStatusCache, &statusv1beta1.MutatorPodStatus{},
 			handler.TypedEnqueueRequestsFromMapFunc(mutatorstatus.PodStatusToMutatorMapper(true, r.gvk.Kind, func(_ context.Context, obj client.Object) []reconcile.Request {
 				return []reconcile.Request{{
 					NamespacedName: apitypes.NamespacedName{

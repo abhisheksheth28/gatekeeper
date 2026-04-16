@@ -93,6 +93,9 @@ type Manager struct {
 
 	// returns the running pod injected by the main controller
 	getPod func(context.Context) (*corev1.Pod, error)
+
+	// podStatusWriter is used for writing ConnectionPodStatuses for export mode.
+	podStatusWriter client.Client
 }
 
 // StatusViolation represents each violation under status.
@@ -250,6 +253,10 @@ func New(mgr manager.Manager, deps *Dependencies) (*Manager, error) {
 		expansionSystem: deps.ExpansionSystem,
 		exportSystem:    deps.ExportSystem,
 		getPod:          deps.GetPod,
+		podStatusWriter: deps.PodStatusWriter,
+	}
+	if am.podStatusWriter == nil {
+		am.podStatusWriter = mgr.GetClient()
 	}
 	return am, nil
 }
@@ -291,7 +298,7 @@ func (am *Manager) audit(ctx context.Context) error {
 				auditExportPublishingState.SuccessCount++
 			}
 			// At the end of the Audit update the Connection status with any errors collected during publishing
-			reportExportConnectionErrors(ctx, auditExportPublishingState, am.log, am.mgr.GetClient(), am.mgr.GetScheme(), am.getPod)
+			reportExportConnectionErrors(ctx, auditExportPublishingState, am.log, am.podStatusWriter, am.mgr.GetScheme(), am.getPod)
 		}
 	}()
 

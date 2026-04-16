@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -46,10 +47,17 @@ import (
 var log = logf.Log.WithName("controller").WithValues(logging.Process, "mutator_status_controller")
 
 type Adder struct {
-	WatchManager *watch.Manager
+	WatchManager    *watch.Manager
+	PodStatusWriter client.Client
+	PodStatusCache  cache.Cache
 }
 
 func (a *Adder) InjectTracker(_ *readiness.Tracker) {}
+
+func (a *Adder) InjectPodStatusClients(writer client.Client, podStatusCache cache.Cache) {
+	a.PodStatusWriter = writer
+	a.PodStatusCache = podStatusCache
+}
 
 // Add creates a new Mutator Status Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
@@ -57,21 +65,23 @@ func (a *Adder) Add(mgr manager.Manager) error {
 	if !operations.IsAssigned(operations.MutationStatus) {
 		return nil
 	}
-	r := newReconciler(mgr)
-	return add(mgr, r)
+	r := newReconciler(mgr, a.PodStatusCache)
+	return add(mgr, r, a.PodStatusCache)
 }
 
 // newReconciler returns a new reconcile.Reconciler.
 func newReconciler(
 	mgr manager.Manager,
+	podStatusCache cache.Cache,
 ) reconcile.Reconciler {
 	return &ReconcileMutatorStatus{
 		// Separate reader and writer because manager's default client bypasses the cache for unstructured resources.
-		writer:       mgr.GetClient(),
-		statusClient: mgr.GetClient(),
-		reader:       mgr.GetCache(),
-		scheme:       mgr.GetScheme(),
-		log:          log,
+		writer:         mgr.GetClient(),
+		statusClient:   mgr.GetClient(),
+		reader:         mgr.GetCache(),
+		podStatusCache: podStatusCache,
+		scheme:         mgr.GetScheme(),
+		log:            log,
 	}
 }
 
@@ -161,7 +171,7 @@ func eventPackerMapFuncHardcodeGVKForModifySet(gvk schema.GroupVersionKind) hand
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler.
-func add(mgr manager.Manager, r reconcile.Reconciler) error {
+func add(mgr manager.Manager, r reconcile.Reconciler, podStatusCache cache.Cache) error {
 	// Create a new controller
 	c, err := controller.New("mutator-status-controller", mgr, controller.Options{Reconciler: r})
 	if err != nil {
@@ -170,7 +180,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 
 	// Watch for changes to MutatorStatus
 	err = c.Watch(
-		source.Kind(mgr.GetCache(), &v1beta1.MutatorPodStatus{},
+		source.Kind(podStatusCache, &v1beta1.MutatorPodStatus{},
 			handler.TypedEnqueueRequestsFromMapFunc(PodStatusToMutatorMapper(false, "", util.EventPackerMapFunc())),
 		))
 	if err != nil {
@@ -208,11 +218,12 @@ var _ reconcile.Reconciler = &ReconcileMutatorStatus{}
 
 // ReconcileMutatorStatus reconciles an arbitrary mutator object described by Kind.
 type ReconcileMutatorStatus struct {
-	reader       client.Reader
-	writer       client.Writer
-	statusClient client.StatusClient
-	scheme       *runtime.Scheme
-	log          logr.Logger
+	reader         client.Reader
+	writer         client.Writer
+	statusClient   client.StatusClient
+	podStatusCache cache.Cache
+	scheme         *runtime.Scheme
+	log            logr.Logger
 }
 
 // +kubebuilder:rbac:groups=mutations.gatekeeper.sh,resources=*,verbs=get;list;watch;create;update;patch;delete
@@ -248,7 +259,7 @@ func (r *ReconcileMutatorStatus) Reconcile(ctx context.Context, request reconcil
 	r.log.Info("handling mutator status update", "instance", instance)
 
 	sObjs := &v1beta1.MutatorPodStatusList{}
-	if err := r.reader.List(
+	if err := r.podStatusCache.List(
 		ctx,
 		sObjs,
 		client.MatchingLabels{

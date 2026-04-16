@@ -148,15 +148,17 @@ func TestReconcile(t *testing.T) {
 	}
 	events := make(chan event.GenericEvent, 1024)
 
-	rec := newReconciler(mgr, mSys, tracker, func(_ context.Context) (*corev1.Pod, error) { return pod, nil }, kind, newObj, newMutator, events, ctrlmutators.NewStatsReporter())
+	rec := newReconciler(mgr, mSys, tracker, func(_ context.Context) (*corev1.Pod, error) { return pod, nil }, kind, newObj, newMutator, events, mgr.GetClient(), mgr.GetCache(), ctrlmutators.NewStatsReporter())
 	adder := Adder{Events: events}
 
-	err = adder.add(mgr, rec)
+	err = adder.add(mgr, rec, mgr.GetCache())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	statusAdder := &mutatorstatus.Adder{}
+	statusAdder := &mutatorstatus.Adder{
+		PodStatusCache: mgr.GetCache(),
+	}
 	err = statusAdder.Add(mgr)
 	if err != nil {
 		t.Fatal(err)

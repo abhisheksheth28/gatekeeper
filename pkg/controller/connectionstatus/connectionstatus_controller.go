@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -46,10 +47,17 @@ import (
 var log = logf.Log.WithName("controller").WithValues(logging.Process, "connection_status_controller")
 
 type Adder struct {
-	WatchManager *watch.Manager
+	WatchManager    *watch.Manager
+	PodStatusWriter client.Client
+	PodStatusCache  cache.Cache
 }
 
 func (a *Adder) InjectTracker(_ *readiness.Tracker) {}
+
+func (a *Adder) InjectPodStatusClients(writer client.Client, podStatusCache cache.Cache) {
+	a.PodStatusWriter = writer
+	a.PodStatusCache = podStatusCache
+}
 
 // Add creates a new connection Status Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
@@ -57,19 +65,20 @@ func (a *Adder) Add(mgr manager.Manager) error {
 	if !operations.IsAssigned(operations.Status) {
 		return nil
 	}
-	r := newReconciler(mgr)
-	return add(mgr, r)
+	r := newReconciler(mgr, a.PodStatusCache)
+	return add(mgr, r, a.PodStatusCache)
 }
 
 // newReconciler returns a new reconcile.Reconciler.
-func newReconciler(mgr manager.Manager) *ReconcileConnectionStatus {
+func newReconciler(mgr manager.Manager, podStatusCache cache.Cache) *ReconcileConnectionStatus {
 	return &ReconcileConnectionStatus{
 		// Separate reader and writer because manager's default client bypasses the cache for unstructured resources.
-		writer:       mgr.GetClient(),
-		statusClient: mgr.GetClient(),
-		reader:       mgr.GetCache(),
-		scheme:       mgr.GetScheme(),
-		log:          log,
+		writer:         mgr.GetClient(),
+		statusClient:   mgr.GetClient(),
+		reader:         mgr.GetCache(),
+		podStatusCache: podStatusCache,
+		scheme:         mgr.GetScheme(),
+		log:            log,
 	}
 }
 
@@ -103,7 +112,7 @@ func PodStatusToConnectionMapper(selfOnly bool) handler.TypedMapFunc[*statusv1al
 
 // Add creates a new connection status Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
-func add(mgr manager.Manager, r reconcile.Reconciler) error {
+func add(mgr manager.Manager, r reconcile.Reconciler, podStatusCache cache.Cache) error {
 	c, err := controller.New("connection-status-controller", mgr, controller.Options{Reconciler: r})
 	if err != nil {
 		return err
@@ -111,7 +120,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 
 	err = c.Watch(
 		source.Kind(
-			mgr.GetCache(), &statusv1alpha1.ConnectionPodStatus{},
+			podStatusCache, &statusv1alpha1.ConnectionPodStatus{},
 			handler.TypedEnqueueRequestsFromMapFunc(PodStatusToConnectionMapper(false)),
 			predicate.TypedFuncs[*statusv1alpha1.ConnectionPodStatus]{
 				CreateFunc: func(e event.TypedCreateEvent[*statusv1alpha1.ConnectionPodStatus]) bool {
@@ -164,9 +173,10 @@ var _ reconcile.Reconciler = &ReconcileConnectionStatus{}
 
 // ReconcileConnectionStatus provides the dependencies required to reconcile the status of a Connection resource.
 type ReconcileConnectionStatus struct {
-	reader       client.Reader
-	writer       client.Writer
-	statusClient client.StatusClient
+	reader         client.Reader
+	writer         client.Writer
+	statusClient   client.StatusClient
+	podStatusCache cache.Cache
 
 	scheme *runtime.Scheme
 	log    logr.Logger
@@ -190,7 +200,7 @@ func (r *ReconcileConnectionStatus) Reconcile(ctx context.Context, request recon
 	}
 
 	sObjs := &statusv1alpha1.ConnectionPodStatusList{}
-	if err := r.reader.List(
+	if err := r.podStatusCache.List(
 		ctx,
 		sObjs,
 		client.MatchingLabels{statusv1beta1.ConnectionNameLabel: request.Name},

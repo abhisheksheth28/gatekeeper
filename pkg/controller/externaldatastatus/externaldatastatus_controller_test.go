@@ -37,10 +37,10 @@ func TestReconcile_E2E(t *testing.T) {
 	pod, _ := getPod(ctx)
 
 	// Wrap the controller Reconciler so it writes each request to a map when it is finished reconciling
-	originalReconciler := newReconciler(mgr)
+	originalReconciler := newReconciler(mgr, mgr.GetCache())
 	wrappedReconciler, requests := testutils.SetupTestReconcile(originalReconciler)
 	// Register the controller with the manager
-	require.NoError(t, add(mgr, wrappedReconciler))
+	require.NoError(t, add(mgr, wrappedReconciler, mgr.GetCache()))
 	// Start the manager and let it run in the background
 	testutils.StartManager(ctx, t, mgr)
 
@@ -399,7 +399,7 @@ func TestReconcile_E2E(t *testing.T) {
 	})
 
 	t.Run("Reconcile with non-existent Provider", func(t *testing.T) {
-		reconciler := newReconciler(mgr)
+		reconciler := newReconciler(mgr, mgr.GetCache())
 
 		// Try to reconcile a non-existent provider
 		nonExistentRequest := reconcile.Request{

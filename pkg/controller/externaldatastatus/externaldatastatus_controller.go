@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -43,10 +44,17 @@ import (
 var log = logf.Log.WithName("controller").WithValues(logging.Process, "externaldata_status_controller")
 
 type Adder struct {
-	WatchManager *watch.Manager
+	WatchManager    *watch.Manager
+	PodStatusWriter client.Client
+	PodStatusCache  cache.Cache
 }
 
 func (a *Adder) InjectTracker(_ *readiness.Tracker) {}
+
+func (a *Adder) InjectPodStatusClients(writer client.Client, podStatusCache cache.Cache) {
+	a.PodStatusWriter = writer
+	a.PodStatusCache = podStatusCache
+}
 
 // Add creates a new ProviderPodStatus Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
@@ -54,19 +62,20 @@ func (a *Adder) Add(mgr manager.Manager) error {
 	if !operations.IsAssigned(operations.Status) {
 		return nil
 	}
-	r := newReconciler(mgr)
-	return add(mgr, r)
+	r := newReconciler(mgr, a.PodStatusCache)
+	return add(mgr, r, a.PodStatusCache)
 }
 
 // newReconciler returns a new reconcile.Reconciler.
-func newReconciler(mgr manager.Manager) *ReconcileProviderStatus {
+func newReconciler(mgr manager.Manager, podStatusCache cache.Cache) *ReconcileProviderStatus {
 	return &ReconcileProviderStatus{
 		// Separate reader and writer because manager's default client bypasses the cache for unstructured resources.
-		writer:       mgr.GetClient(),
-		statusClient: mgr.GetClient(),
-		reader:       mgr.GetCache(),
-		scheme:       mgr.GetScheme(),
-		log:          log,
+		writer:         mgr.GetClient(),
+		statusClient:   mgr.GetClient(),
+		reader:         mgr.GetCache(),
+		podStatusCache: podStatusCache,
+		scheme:         mgr.GetScheme(),
+		log:            log,
 	}
 }
 
@@ -97,7 +106,7 @@ func PodStatusToProviderMapper(selfOnly bool) handler.TypedMapFunc[*statusv1beta
 
 // Add creates a new externaldata status Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
-func add(mgr manager.Manager, r reconcile.Reconciler) error {
+func add(mgr manager.Manager, r reconcile.Reconciler, podStatusCache cache.Cache) error {
 	c, err := controller.New("externaldata-status-controller", mgr, controller.Options{Reconciler: r})
 	if err != nil {
 		return err
@@ -105,7 +114,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 
 	err = c.Watch(
 		source.Kind(
-			mgr.GetCache(), &statusv1beta1.ProviderPodStatus{},
+			podStatusCache, &statusv1beta1.ProviderPodStatus{},
 			handler.TypedEnqueueRequestsFromMapFunc(PodStatusToProviderMapper(false))),
 	)
 	if err != nil {
@@ -126,9 +135,10 @@ var _ reconcile.Reconciler = &ReconcileProviderStatus{}
 
 // ReconcileProviderStatus provides the dependencies required to reconcile the status of a Provider resource.
 type ReconcileProviderStatus struct {
-	reader       client.Reader
-	writer       client.Writer
-	statusClient client.StatusClient
+	reader         client.Reader
+	writer         client.Writer
+	statusClient   client.StatusClient
+	podStatusCache cache.Cache
 
 	scheme *runtime.Scheme
 	log    logr.Logger
@@ -152,7 +162,7 @@ func (r *ReconcileProviderStatus) Reconcile(ctx context.Context, request reconci
 	}
 
 	sObjs := &statusv1beta1.ProviderPodStatusList{}
-	if err := r.reader.List(
+	if err := r.podStatusCache.List(
 		ctx,
 		sObjs,
 		client.MatchingLabels{statusv1beta1.ProviderNameLabel: request.Name},

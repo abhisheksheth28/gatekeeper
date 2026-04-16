@@ -54,6 +54,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -89,6 +90,8 @@ type Adder struct {
 	GetPod             func(context.Context) (*corev1.Pod, error)
 	WebhookConfigCache *webhookconfigcache.WebhookConfigCache
 	CtEvents           <-chan event.GenericEvent
+	PodStatusWriter    client.Client
+	PodStatusCache     cache.Cache
 }
 
 // Add creates a new ConstraintTemplate Controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
@@ -99,11 +102,11 @@ func (a *Adder) Add(mgr manager.Manager) error {
 	}
 	// constraintEvents will be used to receive events from dynamic watches registered for constraint controller
 	constraintEvents := make(chan event.GenericEvent, 1024)
-	r, err := newReconciler(mgr, a.CFClient, a.WatchManager, a.Tracker, constraintEvents, constraintEvents, a.GetPod, a.WebhookConfigCache, a.ProcessExcluder)
+	r, err := newReconciler(mgr, a.CFClient, a.WatchManager, a.Tracker, constraintEvents, constraintEvents, a.GetPod, a.WebhookConfigCache, a.ProcessExcluder, a.PodStatusWriter, a.PodStatusCache)
 	if err != nil {
 		return err
 	}
-	return add(mgr, r, a.CtEvents)
+	return add(mgr, r, a.CtEvents, a.PodStatusCache)
 }
 
 func (a *Adder) InjectCFClient(c *constraintclient.Client) {
@@ -134,11 +137,16 @@ func (a *Adder) InjectConstraintTemplateEvent(ctEvents chan event.GenericEvent) 
 	a.CtEvents = ctEvents
 }
 
+func (a *Adder) InjectPodStatusClients(writer client.Client, podStatusCache cache.Cache) {
+	a.PodStatusWriter = writer
+	a.PodStatusCache = podStatusCache
+}
+
 // newReconciler returns a new reconcile.Reconciler
 // cstrEvents is the channel from which constraint controller will receive the events
 // regEvents is the channel registered by Registrar to put the events in
 // cstrEvents and regEvents point to same event channel except for testing.
-func newReconciler(mgr manager.Manager, cfClient *constraintclient.Client, wm *watch.Manager, tracker *readiness.Tracker, cstrEvents chan event.GenericEvent, regEvents chan<- event.GenericEvent, getPod func(context.Context) (*corev1.Pod, error), webhookCache *webhookconfigcache.WebhookConfigCache, processExcluder *process.Excluder) (*ReconcileConstraintTemplate, error) {
+func newReconciler(mgr manager.Manager, cfClient *constraintclient.Client, wm *watch.Manager, tracker *readiness.Tracker, cstrEvents chan event.GenericEvent, regEvents chan<- event.GenericEvent, getPod func(context.Context) (*corev1.Pod, error), webhookCache *webhookconfigcache.WebhookConfigCache, processExcluder *process.Excluder, podStatusWriter client.Client, podStatusCache cache.Cache) (*ReconcileConstraintTemplate, error) {
 	// constraintsCache contains total number of constraints and shared mutex and vap label
 	constraintsCache := constraint.NewConstraintsCache()
 
@@ -146,12 +154,13 @@ func newReconciler(mgr manager.Manager, cfClient *constraintclient.Client, wm *w
 	if err != nil {
 		return nil, err
 	}
-	statusW, err := wm.NewRegistrar(ctrlName+"-status", regEvents)
+
+	// statusEvents receives events from the status watcher registrar.
+	statusEvents := make(chan event.GenericEvent, 1024)
+	statusW, err := wm.NewRegistrar(ctrlName+"-status", statusEvents)
 	if err != nil {
 		return nil, err
 	}
-
-	// via the registrar below.
 
 	constraintAdder := constraint.Adder{
 		CFClient:         cfClient,
@@ -161,6 +170,8 @@ func newReconciler(mgr manager.Manager, cfClient *constraintclient.Client, wm *w
 		Tracker:          tracker,
 		GetPod:           getPod,
 		IfWatching:       w.IfWatching,
+		PodStatusWriter:  podStatusWriter,
+		PodStatusCache:   podStatusCache,
 	}
 	// Create subordinate controller - we will feed it events dynamically via watch
 	if err := constraintAdder.Add(mgr); err != nil {
@@ -168,22 +179,23 @@ func newReconciler(mgr manager.Manager, cfClient *constraintclient.Client, wm *w
 	}
 
 	if operations.IsAssigned(operations.Status) {
-		// statusEvents will be used to receive events from dynamic watches registered
-		// via the registrar below.
-		statusEvents := make(chan event.GenericEvent, 1024)
 		csAdder := constraintstatus.Adder{
-			CFClient:     cfClient,
-			WatchManager: wm,
-			Events:       statusEvents,
-			IfWatching:   statusW.IfWatching,
+			CFClient:        cfClient,
+			WatchManager:    wm,
+			Events:          statusEvents,
+			IfWatching:      statusW.IfWatching,
+			PodStatusWriter: podStatusWriter,
+			PodStatusCache:  podStatusCache,
 		}
 		if err := csAdder.Add(mgr); err != nil {
 			return nil, err
 		}
 
 		ctsAdder := constrainttemplatestatus.Adder{
-			CfClient:     cfClient,
-			WatchManager: wm,
+			CfClient:        cfClient,
+			WatchManager:    wm,
+			PodStatusWriter: podStatusWriter,
+			PodStatusCache:  podStatusCache,
 		}
 		if err := ctsAdder.Add(mgr); err != nil {
 			return nil, err
@@ -193,6 +205,8 @@ func newReconciler(mgr manager.Manager, cfClient *constraintclient.Client, wm *w
 	r := newStatsReporter()
 	reconciler := &ReconcileConstraintTemplate{
 		Client:          mgr.GetClient(),
+		podStatusWriter: podStatusWriter,
+		podStatusCache:  podStatusCache,
 		scheme:          mgr.GetScheme(),
 		cfClient:        cfClient,
 		watcher:         w,
@@ -212,7 +226,7 @@ func newReconciler(mgr manager.Manager, cfClient *constraintclient.Client, wm *w
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler.
-func add(mgr manager.Manager, r reconcile.Reconciler, events <-chan event.GenericEvent) error {
+func add(mgr manager.Manager, r reconcile.Reconciler, events <-chan event.GenericEvent, podStatusCache cache.Cache) error {
 	// Create a new controller
 	c, err := controller.New(ctrlName, mgr, controller.Options{Reconciler: r})
 	if err != nil {
@@ -235,7 +249,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler, events <-chan event.Generi
 
 	// Watch for changes to ConstraintTemplateStatus
 	err = c.Watch(
-		source.Kind(mgr.GetCache(), &statusv1beta1.ConstraintTemplatePodStatus{},
+		source.Kind(podStatusCache, &statusv1beta1.ConstraintTemplatePodStatus{},
 			handler.TypedEnqueueRequestsFromMapFunc(constrainttemplatestatus.PodStatusToConstraintTemplateMapper(true))))
 	if err != nil {
 		return err
@@ -284,6 +298,8 @@ var _ reconcile.Reconciler = &ReconcileConstraintTemplate{}
 // ReconcileConstraintTemplate reconciles a ConstraintTemplate object.
 type ReconcileConstraintTemplate struct {
 	client.Client
+	podStatusWriter client.Client
+	podStatusCache  cache.Cache
 	scheme          *runtime.Scheme
 	watcher         *watch.Registrar
 	statusWatcher   *watch.Registrar
@@ -394,7 +410,7 @@ func (r *ReconcileConstraintTemplate) Reconcile(ctx context.Context, request rec
 		createErr := &v1beta1.CreateCRDError{Code: ErrCreateCode, Message: err.Error()}
 		status.Status.Errors = append(status.Status.Errors, createErr)
 
-		if updateErr := r.Update(ctx, status); updateErr != nil {
+		if updateErr := r.podStatusWriter.Update(ctx, status); updateErr != nil {
 			logger.Error(updateErr, "update status error")
 			return reconcile.Result{Requeue: true}, nil
 		}
@@ -454,7 +470,7 @@ func (r *ReconcileConstraintTemplate) reportErrorOnCTStatus(ctx context.Context,
 		Message: fmt.Sprintf("%s: %s", message, err),
 	}
 	status.Status.Errors = append(status.Status.Errors, createErr)
-	if err2 := r.Update(ctx, status); err2 != nil {
+	if err2 := r.podStatusWriter.Update(ctx, status); err2 != nil {
 		return errorpkg.Wrap(err, fmt.Sprintf("Could not update status: %s", err2))
 	}
 	return err
@@ -522,7 +538,7 @@ func (r *ReconcileConstraintTemplate) handleUpdate(
 	if err != nil {
 		return reconcile.Result{}, err
 	}
-	if err := r.Update(ctx, status); err != nil {
+	if err := r.podStatusWriter.Update(ctx, status); err != nil {
 		logger.Error(err, "update ct pod status error")
 		return reconcile.Result{Requeue: true}, nil
 	}
@@ -563,21 +579,21 @@ func (r *ReconcileConstraintTemplate) deleteAllStatus(ctx context.Context, ctNam
 	}
 	statusObj.SetName(sName)
 	statusObj.SetNamespace(util.GetNamespace())
-	if err := r.Delete(ctx, statusObj); err != nil {
+	if err := r.podStatusWriter.Delete(ctx, statusObj); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return err
 		}
 	}
 
 	cstrStatusObjs := &statusv1beta1.ConstraintPodStatusList{}
-	if err := r.List(ctx, cstrStatusObjs, client.MatchingLabels(map[string]string{
+	if err := r.podStatusCache.List(ctx, cstrStatusObjs, client.MatchingLabels(map[string]string{
 		statusv1beta1.PodLabel:                    util.GetPodName(),
 		statusv1beta1.ConstraintTemplateNameLabel: ctName,
 	})); err != nil {
 		return err
 	}
 	for index := range cstrStatusObjs.Items {
-		if err := r.Delete(ctx, &cstrStatusObjs.Items[index]); err != nil {
+		if err := r.podStatusWriter.Delete(ctx, &cstrStatusObjs.Items[index]); err != nil {
 			if !apierrors.IsNotFound(err) {
 				return err
 			}
@@ -594,7 +610,7 @@ func (r *ReconcileConstraintTemplate) getOrCreatePodStatus(ctx context.Context, 
 		return nil, err
 	}
 	key := types.NamespacedName{Name: sName, Namespace: util.GetNamespace()}
-	if err := r.Get(ctx, key, statusObj); err != nil {
+	if err := r.podStatusCache.Get(ctx, key, statusObj); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return nil, err
 		}
@@ -609,7 +625,7 @@ func (r *ReconcileConstraintTemplate) getOrCreatePodStatus(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
-	if err := r.Create(ctx, statusObj); err != nil {
+	if err := r.podStatusWriter.Create(ctx, statusObj); err != nil {
 		return nil, err
 	}
 	return statusObj, nil

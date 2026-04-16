@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -38,6 +39,8 @@ type Adder struct {
 	WatchManager    *watch.Manager
 	ExpansionSystem *expansion.System
 	Tracker         *readiness.Tracker
+	PodStatusWriter client.Client
+	PodStatusCache  cache.Cache
 	// GetPod returns an instance of the currently running Gatekeeper pod
 	GetPod func(context.Context) (*corev1.Pod, error)
 }
@@ -46,8 +49,8 @@ func (a *Adder) Add(mgr manager.Manager) error {
 	if !*expansion.ExpansionEnabled {
 		return nil
 	}
-	r := newReconciler(mgr, a.ExpansionSystem, a.GetPod, a.Tracker)
-	return add(mgr, r)
+	r := newReconciler(mgr, a.ExpansionSystem, a.GetPod, a.Tracker, a.PodStatusWriter, a.PodStatusCache)
+	return add(mgr, r, a.PodStatusCache)
 }
 
 func (a *Adder) InjectTracker(tracker *readiness.Tracker) {
@@ -62,15 +65,22 @@ func (a *Adder) InjectGetPod(getPod func(ctx context.Context) (*corev1.Pod, erro
 	a.GetPod = getPod
 }
 
+func (a *Adder) InjectPodStatusClients(writer client.Client, podStatusCache cache.Cache) {
+	a.PodStatusWriter = writer
+	a.PodStatusCache = podStatusCache
+}
+
 type Reconciler struct {
 	client.Client
-	system       *expansion.System
-	scheme       *runtime.Scheme
-	registry     *etRegistry
-	statusClient client.StatusClient
-	tracker      *readiness.Tracker
-	events       chan event.GenericEvent
-	eventSource  source.Source
+	system          *expansion.System
+	scheme          *runtime.Scheme
+	registry        *etRegistry
+	statusClient    client.StatusClient
+	tracker         *readiness.Tracker
+	events          chan event.GenericEvent
+	eventSource     source.Source
+	podStatusWriter client.Client
+	podStatusCache  cache.Cache
 
 	getPod func(context.Context) (*corev1.Pod, error)
 }
@@ -79,22 +89,26 @@ func newReconciler(mgr manager.Manager,
 	system *expansion.System,
 	getPod func(ctx context.Context) (*corev1.Pod, error),
 	tracker *readiness.Tracker,
+	podStatusWriter client.Client,
+	podStatusCache cache.Cache,
 ) *Reconciler {
 	ev := make(chan event.GenericEvent, eventQueueSize)
 	return &Reconciler{
-		Client:       mgr.GetClient(),
-		system:       system,
-		scheme:       mgr.GetScheme(),
-		registry:     newRegistry(),
-		statusClient: mgr.GetClient(),
-		getPod:       getPod,
-		tracker:      tracker,
-		events:       ev,
-		eventSource:  source.Channel(ev, &handler.EnqueueRequestForObject{}),
+		Client:          mgr.GetClient(),
+		system:          system,
+		scheme:          mgr.GetScheme(),
+		registry:        newRegistry(),
+		statusClient:    mgr.GetClient(),
+		getPod:          getPod,
+		tracker:         tracker,
+		events:          ev,
+		eventSource:     source.Channel(ev, &handler.EnqueueRequestForObject{}),
+		podStatusWriter: podStatusWriter,
+		podStatusCache:  podStatusCache,
 	}
 }
 
-func add(mgr manager.Manager, r *Reconciler) error {
+func add(mgr manager.Manager, r *Reconciler, podStatusCache cache.Cache) error {
 	c, err := controller.New("expansion-template-controller", mgr, controller.Options{Reconciler: r})
 	if err != nil {
 		return err
@@ -118,7 +132,7 @@ func add(mgr manager.Manager, r *Reconciler) error {
 
 	// Watch for changes to ExpansionTemplateStatuses
 	err = c.Watch(
-		source.Kind(mgr.GetCache(), &statusv1beta1.ExpansionTemplatePodStatus{}, handler.TypedEnqueueRequestsFromMapFunc(expansionstatus.PodStatusToExpansionTemplateMapper(true))))
+		source.Kind(podStatusCache, &statusv1beta1.ExpansionTemplatePodStatus{}, handler.TypedEnqueueRequestsFromMapFunc(expansionstatus.PodStatusToExpansionTemplateMapper(true))))
 	if err != nil {
 		return err
 	}
@@ -218,7 +232,7 @@ func (r *Reconciler) deleteStatus(ctx context.Context, etName string) error {
 	}
 	status.SetName(sName)
 	status.SetNamespace(util.GetNamespace())
-	if err := r.Delete(ctx, status); err != nil && !apierrors.IsNotFound(err) {
+	if err := r.podStatusWriter.Delete(ctx, status); err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 	return nil
@@ -239,7 +253,7 @@ func (r *Reconciler) updateOrCreatePodStatus(ctx context.Context, et *unversione
 	shouldCreate := true
 	status := &statusv1beta1.ExpansionTemplatePodStatus{}
 
-	err = r.Get(ctx, types.NamespacedName{Namespace: sNS, Name: sName}, status)
+	err = r.podStatusCache.Get(ctx, types.NamespacedName{Namespace: sNS, Name: sName}, status)
 	switch {
 	case err == nil:
 		shouldCreate = false
@@ -255,9 +269,9 @@ func (r *Reconciler) updateOrCreatePodStatus(ctx context.Context, et *unversione
 	status.Status.ObservedGeneration = et.GetGeneration()
 
 	if shouldCreate {
-		return r.Create(ctx, status)
+		return r.podStatusWriter.Create(ctx, status)
 	}
-	return r.Update(ctx, status)
+	return r.podStatusWriter.Update(ctx, status)
 }
 
 func (r *Reconciler) newETStatus(pod *corev1.Pod, et *unversioned.ExpansionTemplate) (*statusv1beta1.ExpansionTemplatePodStatus, error) {

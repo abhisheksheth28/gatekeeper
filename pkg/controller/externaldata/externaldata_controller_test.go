@@ -117,10 +117,10 @@ func TestReconcile(t *testing.T) {
 		fakes.WithName("no-pod"),
 	)
 
-	rec := newReconciler(mgr, cfClient, pc, tracker, func(context.Context) (*corev1.Pod, error) { return pod, nil })
+	rec := newReconciler(mgr, cfClient, pc, tracker, func(context.Context) (*corev1.Pod, error) { return pod, nil }, mgr.GetClient(), mgr.GetCache())
 
 	recFn, requests := SetupTestReconcile(rec)
-	err = add(mgr, recFn)
+	err = add(mgr, recFn, mgr.GetCache())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestReconcile_MetricsIntegration(t *testing.T) {
 
 	rec := newReconciler(mgr, cfClient, pc, tracker, func(context.Context) (*corev1.Pod, error) {
 		return pod, nil
-	})
+	}, mgr.GetClient(), mgr.GetCache())
 
 	// Create gatekeeper-system namespace if it doesn't exist
 	ns := &corev1.Namespace{
@@ -324,7 +324,7 @@ func TestReconcile_ExternalDataDisabled(t *testing.T) {
 	mgr := setupManager(t)
 
 	// Try to add controller - should return early without error
-	err := add(mgr, nil)
+	err := add(mgr, nil, mgr.GetCache())
 	assert.NoError(t, err)
 }
 

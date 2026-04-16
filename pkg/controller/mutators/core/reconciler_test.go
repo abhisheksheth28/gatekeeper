@@ -26,11 +26,49 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
+
+// fakeCache wraps fakeClient to satisfy cache.Cache for test purposes.
+type fakeCache struct {
+	fakeClient *fakeClient
+}
+
+func (f *fakeCache) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	return f.fakeClient.Get(ctx, key, obj, opts...)
+}
+
+func (f *fakeCache) List(_ context.Context, _ client.ObjectList, _ ...client.ListOption) error {
+	panic("fakeCache.List not implemented")
+}
+
+func (f *fakeCache) GetInformer(_ context.Context, _ client.Object, _ ...cache.InformerGetOption) (cache.Informer, error) {
+	panic("fakeCache.GetInformer not implemented")
+}
+
+func (f *fakeCache) GetInformerForKind(_ context.Context, _ schema.GroupVersionKind, _ ...cache.InformerGetOption) (cache.Informer, error) {
+	panic("fakeCache.GetInformerForKind not implemented")
+}
+
+func (f *fakeCache) RemoveInformer(_ context.Context, _ client.Object) error {
+	panic("fakeCache.RemoveInformer not implemented")
+}
+
+func (f *fakeCache) Start(_ context.Context) error {
+	panic("fakeCache.Start not implemented")
+}
+
+func (f *fakeCache) WaitForCacheSync(_ context.Context) bool {
+	return true
+}
+
+func (f *fakeCache) IndexField(_ context.Context, _ client.Object, _ string, _ client.IndexerFunc) error {
+	panic("fakeCache.IndexField not implemented")
+}
 
 func mustParse(p string) parser.Path {
 	pth, err := parser.Parse(p)
@@ -275,7 +313,7 @@ func (e *errSome) Error() string {
 	return fmt.Sprintf("some error: %d", e.id)
 }
 
-func newFakeReconciler(t *testing.T, c client.Client, events chan event.GenericEvent) *Reconciler {
+func newFakeReconciler(t *testing.T, c *fakeClient, events chan event.GenericEvent) *Reconciler {
 	s := runtime.NewScheme()
 	err := corev1.AddToScheme(s)
 	if err != nil {
@@ -285,10 +323,12 @@ func newFakeReconciler(t *testing.T, c client.Client, events chan event.GenericE
 	const podName = "no-pod"
 
 	return &Reconciler{
-		Client:         c,
-		log:            logr.New(logf.NullLogSink{}),
-		newMutationObj: func() client.Object { return &fakeMutatorObject{} },
-		cache:          mutators.NewMutationCache(),
+		Client:          c,
+		podStatusWriter: c,
+		podStatusCache:  &fakeCache{fakeClient: c},
+		log:             logr.New(logf.NullLogSink{}),
+		newMutationObj:  func() client.Object { return &fakeMutatorObject{} },
+		cache:           mutators.NewMutationCache(),
 		mutatorFor: func(object client.Object) (mutationtypes.Mutator, error) {
 			fake, ok := object.(*fakeMutatorObject)
 			if !ok {

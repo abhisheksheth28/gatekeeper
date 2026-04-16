@@ -610,7 +610,8 @@ func TestReportErrorOnConstraintStatus(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			writer := &fakeWriter{updateErr: tt.updateErr}
 			r := &ReconcileConstraint{
-				writer: writer,
+				writer:          writer,
+				podStatusWriter: writer,
 			}
 
 			err := r.reportErrorOnConstraintStatus(context.TODO(), tt.status, tt.err, tt.message)
@@ -1411,6 +1412,7 @@ func TestManageVAPB_PreservesErrorMetricWhenGenerationFails(t *testing.T) {
 }
 
 type fakeWriter struct {
+	client.Client
 	updateErr error
 }
 

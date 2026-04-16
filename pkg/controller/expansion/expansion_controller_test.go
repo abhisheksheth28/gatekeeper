@@ -63,12 +63,12 @@ func TestReconcile(t *testing.T) {
 		fakes.WithName("no-pod"),
 	)
 
-	r := newReconciler(mgr, expSystem, func(context.Context) (*corev1.Pod, error) { return pod, nil }, tracker)
+	r := newReconciler(mgr, expSystem, func(context.Context) (*corev1.Pod, error) { return pod, nil }, tracker, mgr.GetClient(), mgr.GetCache())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = add(mgr, r)
+	err = add(mgr, r, mgr.GetCache())
 	if err != nil {
 		t.Fatal(err)
 	}

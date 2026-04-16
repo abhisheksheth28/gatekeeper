@@ -71,9 +71,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	crCache "sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	crClient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -338,8 +341,38 @@ func innerMain() int {
 		os.Exit(1) // second signal. Exit directly.
 	}()
 
+	// In remote cluster mode create a management cluster client and cache for PodStatus resources.
+	// PodStatuses will be on the management cluster in remote mode. a separate client for writes and a separate cache for reads/watches.
+	var podStatusWriter crClient.Client
+	var podStatusCache crCache.Cache
+	if controller.RemoteClusterEnabled() {
+		mgmtConfig, err := rest.InClusterConfig()
+		if err != nil {
+			setupLog.Error(err, "unable to get in-cluster config for management cluster")
+			return 1
+		}
+		podStatusWriter, err = crClient.New(mgmtConfig, crClient.Options{Scheme: scheme})
+		if err != nil {
+			setupLog.Error(err, "unable to create management cluster client")
+			return 1
+		}
+		podStatusCache, err = crCache.New(mgmtConfig, crCache.Options{
+			Scheme:            scheme,
+			DefaultNamespaces: map[string]crCache.Config{util.GetNamespace(): {}},
+		})
+		if err != nil {
+			setupLog.Error(err, "unable to create management cluster cache")
+			return 1
+		}
+		if err := mgr.Add(podStatusCache); err != nil {
+			setupLog.Error(err, "unable to add management cluster cache as runnable")
+			return 1
+		}
+		setupLog.Info("created management cluster PodStatus infrastructure", "namespace", util.GetNamespace())
+	}
+
 	go func() {
-		setupErr <- setupControllers(ctx, mgr, tracker, setupFinished)
+		setupErr <- setupControllers(ctx, mgr, tracker, setupFinished, podStatusWriter, podStatusCache)
 	}()
 
 	setupLog.Info("starting manager")
@@ -379,7 +412,7 @@ blockingLoop:
 	return 0
 }
 
-func setupControllers(ctx context.Context, mgr ctrl.Manager, tracker *readiness.Tracker, setupFinished chan struct{}) error {
+func setupControllers(ctx context.Context, mgr ctrl.Manager, tracker *readiness.Tracker, setupFinished chan struct{}, podStatusWriter crClient.Client, podStatusCache crCache.Cache) error {
 	// Block until the setup (certificate generation) finishes.
 	<-setupFinished
 
@@ -553,6 +586,8 @@ func setupControllers(ctx context.Context, mgr ctrl.Manager, tracker *readiness.
 		ExpansionSystem: expansionSystem,
 		ProviderCache:   providerCache,
 		ExportSystem:    exportSystem,
+		PodStatusWriter: podStatusWriter,
+		PodStatusCache:  podStatusCache,
 	}
 
 	if operations.IsAssigned(operations.Generate) {
@@ -589,6 +624,7 @@ func setupControllers(ctx context.Context, mgr ctrl.Manager, tracker *readiness.
 			ExpansionSystem: expansionSystem,
 			ExportSystem:    exportSystem,
 			GetPod:          opts.GetPod,
+			PodStatusWriter: podStatusWriter,
 		}
 		if err := audit.AddToManager(mgr, &auditDeps); err != nil {
 			setupLog.Error(err, "unable to register audit with the manager")

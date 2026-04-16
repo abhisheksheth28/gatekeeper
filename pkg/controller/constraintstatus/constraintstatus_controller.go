@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -45,10 +46,17 @@ import (
 var log = logf.Log.WithName("controller").WithValues(logging.Process, "constraint_status_controller")
 
 type Adder struct {
-	CFClient     *constraintclient.Client
-	WatchManager *watch.Manager
-	Events       <-chan event.GenericEvent
-	IfWatching   func(schema.GroupVersionKind, func() error) (bool, error)
+	CFClient        *constraintclient.Client
+	WatchManager    *watch.Manager
+	PodStatusWriter client.Client
+	PodStatusCache  cache.Cache
+	Events          <-chan event.GenericEvent
+	IfWatching      func(schema.GroupVersionKind, func() error) (bool, error)
+}
+
+func (a *Adder) InjectPodStatusClients(writer client.Client, podStatusCache cache.Cache) {
+	a.PodStatusWriter = writer
+	a.PodStatusCache = podStatusCache
 }
 
 // Add creates a new Constraint Status Controller and adds it to the Manager. The Manager will set fields on the Controller
@@ -57,22 +65,24 @@ func (a *Adder) Add(mgr manager.Manager) error {
 	if !operations.IsAssigned(operations.Status) {
 		return nil
 	}
-	r := newReconciler(mgr)
+	r := newReconciler(mgr, a.PodStatusCache)
 	if a.IfWatching != nil {
 		r.ifWatching = a.IfWatching
 	}
-	return add(mgr, r, a.Events)
+	return add(mgr, r, a.Events, a.PodStatusCache)
 }
 
 // newReconciler returns a new reconcile.Reconciler.
 func newReconciler(
 	mgr manager.Manager,
+	podStatusCache cache.Cache,
 ) *ReconcileConstraintStatus {
 	return &ReconcileConstraintStatus{
 		// Separate reader and writer because manager's default client bypasses the cache for unstructured resources.
-		writer:       mgr.GetClient(),
-		statusClient: mgr.GetClient(),
-		reader:       mgr.GetCache(),
+		writer:         mgr.GetClient(),
+		statusClient:   mgr.GetClient(),
+		reader:         mgr.GetCache(),
+		podStatusCache: podStatusCache,
 
 		scheme:     mgr.GetScheme(),
 		log:        log,
@@ -115,7 +125,7 @@ func PodStatusToConstraintMapper(selfOnly bool, packerMap handler.MapFunc) handl
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler.
-func add(mgr manager.Manager, r reconcile.Reconciler, events <-chan event.GenericEvent) error {
+func add(mgr manager.Manager, r reconcile.Reconciler, events <-chan event.GenericEvent, podStatusCache cache.Cache) error {
 	// Create a new controller
 	c, err := controller.New("constraint-status-controller", mgr, controller.Options{Reconciler: r})
 	if err != nil {
@@ -124,7 +134,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler, events <-chan event.Generi
 
 	// Watch for changes to ConstraintStatus
 	err = c.Watch(
-		source.Kind(mgr.GetCache(), &v1beta1.ConstraintPodStatus{}, handler.TypedEnqueueRequestsFromMapFunc(PodStatusToConstraintMapper(false, util.EventPackerMapFunc()))))
+		source.Kind(podStatusCache, &v1beta1.ConstraintPodStatus{}, handler.TypedEnqueueRequestsFromMapFunc(PodStatusToConstraintMapper(false, util.EventPackerMapFunc()))))
 	if err != nil {
 		return err
 	}
@@ -138,9 +148,10 @@ var _ reconcile.Reconciler = &ReconcileConstraintStatus{}
 
 // ReconcileConstraintStatus reconciles an arbitrary constraint object described by Kind.
 type ReconcileConstraintStatus struct {
-	reader       client.Reader
-	writer       client.Writer
-	statusClient client.StatusClient
+	reader         client.Reader
+	writer         client.Writer
+	statusClient   client.StatusClient
+	podStatusCache cache.Cache
 
 	scheme     *runtime.Scheme
 	log        logr.Logger
@@ -191,7 +202,7 @@ func (r *ReconcileConstraintStatus) Reconcile(ctx context.Context, request recon
 	r.log.Info("handling constraint status update", "instance", instance)
 
 	sObjs := &v1beta1.ConstraintPodStatusList{}
-	if err := r.reader.List(
+	if err := r.podStatusCache.List(
 		ctx,
 		sObjs,
 		client.MatchingLabels{

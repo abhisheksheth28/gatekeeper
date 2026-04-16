@@ -16,6 +16,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -30,18 +31,20 @@ import (
 var log = logf.Log.WithName("controller").WithValues(logging.Process, "export_controller")
 
 type Adder struct {
-	ExportSystem export.Exporter
+	ExportSystem    export.Exporter
+	PodStatusWriter client.Client
+	PodStatusCache  cache.Cache
 	// GetPod returns an instance of the currently running Gatekeeper pod
 	GetPod func(context.Context) (*corev1.Pod, error)
 }
 
 func (a *Adder) Add(mgr manager.Manager) error {
-	r := newReconciler(mgr, a.ExportSystem, *exportutil.AuditConnection, a.GetPod)
+	r := newReconciler(mgr, a.ExportSystem, *exportutil.AuditConnection, a.GetPod, a.PodStatusWriter, a.PodStatusCache)
 	if r == nil {
 		log.Info("Export functionality is disabled, skipping export connection controller setup")
 		return nil
 	}
-	return add(mgr, r)
+	return add(mgr, r, a.PodStatusCache)
 }
 
 func (a *Adder) InjectTracker(_ *readiness.Tracker) {}
@@ -54,17 +57,24 @@ func (a *Adder) InjectGetPod(getPod func(ctx context.Context) (*corev1.Pod, erro
 	a.GetPod = getPod
 }
 
+func (a *Adder) InjectPodStatusClients(writer client.Client, podStatusCache cache.Cache) {
+	a.PodStatusWriter = writer
+	a.PodStatusCache = podStatusCache
+}
+
 type Reconciler struct {
-	reader client.Reader
-	writer client.Writer
-	scheme *runtime.Scheme
-	system export.Exporter
+	reader          client.Reader
+	writer          client.Writer
+	scheme          *runtime.Scheme
+	system          export.Exporter
+	podStatusWriter client.Client
+	podStatusCache  cache.Cache
 	// TODO: Refactor this once multiple connections are supported, for now this helps with injecting dependency for tests
 	auditConnectionName string
 	getPod              func(context.Context) (*corev1.Pod, error)
 }
 
-func newReconciler(mgr manager.Manager, system export.Exporter, auditConnectionName string, getPod func(context.Context) (*corev1.Pod, error)) *Reconciler {
+func newReconciler(mgr manager.Manager, system export.Exporter, auditConnectionName string, getPod func(context.Context) (*corev1.Pod, error), podStatusWriter client.Client, podStatusCache cache.Cache) *Reconciler {
 	if !*exportutil.ExportEnabled {
 		log.Info("Export is disabled via flag")
 		return nil
@@ -79,10 +89,12 @@ func newReconciler(mgr manager.Manager, system export.Exporter, auditConnectionN
 		system:              system,
 		auditConnectionName: auditConnectionName,
 		getPod:              getPod,
+		podStatusWriter:     podStatusWriter,
+		podStatusCache:      podStatusCache,
 	}
 }
 
-func add(mgr manager.Manager, r reconcile.Reconciler) error {
+func add(mgr manager.Manager, r reconcile.Reconciler, podStatusCache cache.Cache) error {
 	c, err := controller.New("export-connection-controller", mgr, controller.Options{Reconciler: r})
 	if err != nil {
 		return err
@@ -113,7 +125,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 
 	err = c.Watch(
 		source.Kind(
-			mgr.GetCache(), &statusv1alpha1.ConnectionPodStatus{},
+			podStatusCache, &statusv1alpha1.ConnectionPodStatus{},
 			handler.TypedEnqueueRequestsFromMapFunc(connectionstatus.PodStatusToConnectionMapper(true)),
 			predicate.TypedFuncs[*statusv1alpha1.ConnectionPodStatus]{
 				CreateFunc: func(e event.TypedCreateEvent[*statusv1alpha1.ConnectionPodStatus]) bool {
@@ -157,10 +169,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		err := r.system.CloseConnection(request.Name)
 		if err != nil {
 			log.Error(err, "failed to close connection", "name", request.Name)
-			return reconcile.Result{Requeue: true}, deleteStatus(ctx, r.writer, request.Namespace, request.Name, r.getPod)
+			return reconcile.Result{Requeue: true}, deleteStatus(ctx, r.podStatusWriter, request.Namespace, request.Name, r.getPod)
 		}
 		log.Info("removed connection", "name", request.Name)
-		return reconcile.Result{}, deleteStatus(ctx, r.writer, request.Namespace, request.Name, r.getPod)
+		return reconcile.Result{}, deleteStatus(ctx, r.podStatusWriter, request.Namespace, request.Name, r.getPod)
 	}
 
 	if request.Name != r.auditConnectionName {
@@ -168,7 +180,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		log.Error(err, "unsupported connection", "namespace", request.Namespace)
 		exportErrors := []*statusv1alpha1.ConnectionError{{Type: statusv1alpha1.UpsertConnectionError, Message: err.Error()}}
 		resetActiveConnection := false
-		return reconcile.Result{}, updateOrCreateConnectionPodStatus(ctx, r.reader, r.writer, r.scheme, connObj, exportErrors, &resetActiveConnection, r.getPod)
+		return reconcile.Result{}, updateOrCreateConnectionPodStatus(ctx, r.podStatusCache, r.podStatusWriter, r.scheme, connObj, exportErrors, &resetActiveConnection, r.getPod)
 	}
 
 	err = r.system.UpsertConnection(ctx, connObj.Spec.Config.Value, request.Name, connObj.Spec.Driver)
@@ -176,11 +188,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		log.Error(err, "failed to upsert connection", "name", request.Name)
 		// Reset the active connection status to false if UpsertConnection fails
 		activeConnection := false
-		return reconcile.Result{Requeue: true}, updateOrCreateConnectionPodStatus(ctx, r.reader, r.writer, r.scheme, connObj, []*statusv1alpha1.ConnectionError{{Type: statusv1alpha1.UpsertConnectionError, Message: err.Error()}}, &activeConnection, r.getPod)
+		return reconcile.Result{Requeue: true}, updateOrCreateConnectionPodStatus(ctx, r.podStatusCache, r.podStatusWriter, r.scheme, connObj, []*statusv1alpha1.ConnectionError{{Type: statusv1alpha1.UpsertConnectionError, Message: err.Error()}}, &activeConnection, r.getPod)
 	}
 
 	log.Info("Connection upsert successful", "name", request.Name, "driver", connObj.Spec.Driver)
-	return reconcile.Result{}, updateOrCreateConnectionPodStatus(ctx, r.reader, r.writer, r.scheme, connObj, []*statusv1alpha1.ConnectionError{}, nil, r.getPod)
+	return reconcile.Result{}, updateOrCreateConnectionPodStatus(ctx, r.podStatusCache, r.podStatusWriter, r.scheme, connObj, []*statusv1alpha1.ConnectionError{}, nil, r.getPod)
 }
 
 func UpdateOrCreateConnectionPodStatus(

@@ -76,9 +76,10 @@ Use remote cluster mode when:
 --kubeconfig=/path/to/target.yaml  # Kubeconfig for target cluster
 ```
 
+
 ### RBAC Requirements
 
-Gatekeeper needs permissions to read Pods in the **local cluster** (to resolve its own pod identity):
+Gatekeeper needs permissions on the **management/local cluster** to resolve its pod identity and manage status resources:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -90,31 +91,21 @@ rules:
 - apiGroups: [""]
   resources: ["pods"]
   verbs: ["get"]
+- apiGroups: ["status.gatekeeper.sh"]
+  resources: ["*"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ```
 
-### Orphan Resource Cleanup
+### Migration from Previous Versions
 
-In remote cluster mode, status resources don't have OwnerReferences (since the pod doesn't exist in the target cluster). When Gatekeeper pods restart, their old status resources become orphaned.
-
-To find orphaned status resources, compare the `gatekeeper.sh/pod` label against running pods. You should check all status resource types: `constrainttemplatepodstatuses`, `constraintpodstatuses`, `mutatorpodstatuses`, `expansiontemplatepodstatuses`, `configpodstatuses`, `providerpodstatuses`, and `connectionpodstatuses`.
+If upgrading from a version where `--enable-remote-cluster` stored status resources on the target cluster (v3.22.x), you may have orphaned status resources on the target cluster. Run the following to clean them up:
 
 ```bash
-# List all pod names referenced in status resources (repeat for each status type)
-kubectl get constrainttemplatepodstatuses -n gatekeeper-system \
-  -o jsonpath="{.items[*].metadata.labels['gatekeeper\.sh/pod']}" | tr ' ' '\n' | sort -u
-
-# Compare with running Gatekeeper pods in local cluster
-kubectl get pods -n gatekeeper-system -l control-plane=controller-manager -o name
-```
-
-To clean up orphaned resources after identifying old pod names:
-
-```bash
-# Delete status resources for a specific old pod
-OLD_POD="gatekeeper-controller-manager-old-xyz"
 kubectl delete constrainttemplatepodstatuses,constraintpodstatuses,mutatorpodstatuses,expansiontemplatepodstatuses,configpodstatuses,providerpodstatuses,connectionpodstatuses \
-  -n gatekeeper-system -l gatekeeper.sh/pod=$OLD_POD
+  -n gatekeeper-system --all --context <target-cluster-context>
 ```
+
+This is a one-time cleanup. After upgrading, status resources are automatically managed on the management cluster.
 
 ## Other Configuration Options
 

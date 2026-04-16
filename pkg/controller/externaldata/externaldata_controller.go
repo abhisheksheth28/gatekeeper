@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -42,9 +43,11 @@ var (
 )
 
 type Adder struct {
-	CFClient      *constraintclient.Client
-	ProviderCache *frameworksexternaldata.ProviderCache
-	Tracker       *readiness.Tracker
+	CFClient        *constraintclient.Client
+	ProviderCache   *frameworksexternaldata.ProviderCache
+	Tracker         *readiness.Tracker
+	PodStatusWriter client.Client
+	PodStatusCache  cache.Cache
 	// GetPod returns an instance of the currently running Gatekeeper pod
 	GetPod func(context.Context) (*corev1.Pod, error)
 }
@@ -65,41 +68,50 @@ func (a *Adder) InjectGetPod(getPod func(ctx context.Context) (*corev1.Pod, erro
 	a.GetPod = getPod
 }
 
+func (a *Adder) InjectPodStatusClients(writer client.Client, podStatusCache cache.Cache) {
+	a.PodStatusWriter = writer
+	a.PodStatusCache = podStatusCache
+}
+
 // Add creates a new ExternalData Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
 func (a *Adder) Add(mgr manager.Manager) error {
-	r := newReconciler(mgr, a.CFClient, a.ProviderCache, a.Tracker, a.GetPod)
-	return add(mgr, r)
+	r := newReconciler(mgr, a.CFClient, a.ProviderCache, a.Tracker, a.GetPod, a.PodStatusWriter, a.PodStatusCache)
+	return add(mgr, r, a.PodStatusCache)
 }
 
 // Reconciler reconciles a ExternalData object.
 type Reconciler struct {
 	client.Client
-	cfClient      *constraintclient.Client
-	providerCache *frameworksexternaldata.ProviderCache
-	tracker       *readiness.Tracker
-	scheme        *runtime.Scheme
-	metrics       *reporter
+	cfClient        *constraintclient.Client
+	providerCache   *frameworksexternaldata.ProviderCache
+	tracker         *readiness.Tracker
+	scheme          *runtime.Scheme
+	metrics         *reporter
+	podStatusWriter client.Client
+	podStatusCache  cache.Cache
 
 	getPod func(context.Context) (*corev1.Pod, error)
 }
 
 // newReconciler returns a new reconcile.Reconciler.
-func newReconciler(mgr manager.Manager, client *constraintclient.Client, providerCache *frameworksexternaldata.ProviderCache, tracker *readiness.Tracker, getPod func(ctx context.Context) (*corev1.Pod, error)) *Reconciler {
+func newReconciler(mgr manager.Manager, client *constraintclient.Client, providerCache *frameworksexternaldata.ProviderCache, tracker *readiness.Tracker, getPod func(ctx context.Context) (*corev1.Pod, error), podStatusWriter client.Client, podStatusCache cache.Cache) *Reconciler {
 	r := &Reconciler{
-		cfClient:      client,
-		providerCache: providerCache,
-		Client:        mgr.GetClient(),
-		scheme:        mgr.GetScheme(),
-		tracker:       tracker,
-		getPod:        getPod,
-		metrics:       newStatsReporter(),
+		cfClient:        client,
+		providerCache:   providerCache,
+		Client:          mgr.GetClient(),
+		scheme:          mgr.GetScheme(),
+		tracker:         tracker,
+		getPod:          getPod,
+		metrics:         newStatsReporter(),
+		podStatusWriter: podStatusWriter,
+		podStatusCache:  podStatusCache,
 	}
 	return r
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler.
-func add(mgr manager.Manager, r reconcile.Reconciler) error {
+func add(mgr manager.Manager, r reconcile.Reconciler, podStatusCache cache.Cache) error {
 	if !*externaldata.ExternalDataEnabled {
 		return nil
 	}
@@ -112,7 +124,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 
 	err = c.Watch(
 		source.Kind(
-			mgr.GetCache(), &statusv1beta1.ProviderPodStatus{},
+			podStatusCache, &statusv1beta1.ProviderPodStatus{},
 			handler.TypedEnqueueRequestsFromMapFunc(externaldatastatus.PodStatusToProviderMapper(true))),
 	)
 	if err != nil {
@@ -204,7 +216,7 @@ func (r *Reconciler) updateOrCreatePodStatus(ctx context.Context, provider *exte
 	shouldCreate := true
 	status := &statusv1beta1.ProviderPodStatus{}
 
-	err = r.Get(ctx, types.NamespacedName{Namespace: sNS, Name: sName}, status)
+	err = r.podStatusCache.Get(ctx, types.NamespacedName{Namespace: sNS, Name: sName}, status)
 	switch {
 	case err == nil:
 		shouldCreate = false
@@ -224,9 +236,9 @@ func (r *Reconciler) updateOrCreatePodStatus(ctx context.Context, provider *exte
 	status.Status.ObservedGeneration = provider.GetGeneration()
 
 	if shouldCreate {
-		return r.Create(ctx, status)
+		return r.podStatusWriter.Create(ctx, status)
 	}
-	return r.Update(ctx, status)
+	return r.podStatusWriter.Update(ctx, status)
 }
 
 func (r *Reconciler) newProviderStatus(pod *corev1.Pod, provider *externaldatav1beta1.Provider) (*statusv1beta1.ProviderPodStatus, error) {
@@ -251,7 +263,7 @@ func (r *Reconciler) deleteStatus(ctx context.Context, providerName string) erro
 	}
 	status.SetName(sName)
 	status.SetNamespace(util.GetNamespace())
-	if err := r.Delete(ctx, status); err != nil {
+	if err := r.podStatusWriter.Delete(ctx, status); err != nil {
 		if !errors.IsNotFound(err) {
 			return err
 		}

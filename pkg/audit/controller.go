@@ -20,6 +20,7 @@ import (
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/expansion"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/export"
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
 
@@ -30,6 +31,9 @@ type Dependencies struct {
 	ExpansionSystem *expansion.System
 	ExportSystem    *export.System
 	GetPod          func(context.Context) (*corev1.Pod, error)
+
+	// PodStatusWriter is used for writing ConnectionPodStatuses for export.
+	PodStatusWriter client.Client
 }
 
 // AddToManager adds audit manager to the Manager.

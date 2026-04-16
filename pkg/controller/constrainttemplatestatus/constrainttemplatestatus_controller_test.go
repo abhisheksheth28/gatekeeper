@@ -132,10 +132,12 @@ violation[{"msg": "denied!"}] {
 	)
 
 	adder := constrainttemplate.Adder{
-		CFClient:     cfClient,
-		WatchManager: wm,
-		Tracker:      tracker,
-		GetPod:       func(context.Context) (*corev1.Pod, error) { return pod, nil },
+		CFClient:        cfClient,
+		WatchManager:    wm,
+		Tracker:         tracker,
+		GetPod:          func(context.Context) (*corev1.Pod, error) { return pod, nil },
+		PodStatusWriter: mgr.GetClient(),
+		PodStatusCache:  mgr.GetCache(),
 	}
 	err = adder.Add(mgr)
 	if err != nil {

@@ -164,12 +164,12 @@ func TestReconcile(t *testing.T) {
 		fakes.WithName("no-pod"),
 	)
 
-	rec, err := newReconciler(mgr, cacheManager, tracker, func(context.Context) (*v1.Pod, error) { return pod, nil }, nil)
+	rec, err := newReconciler(mgr, cacheManager, tracker, func(context.Context) (*v1.Pod, error) { return pod, nil }, nil, mgr.GetClient(), mgr.GetCache())
 	require.NoError(t, err)
 
 	// Wrap the Controller Reconcile function so it writes each request to a map when it is finished reconciling.
 	recFn, requests := testutils.SetupTestReconcile(rec)
-	require.NoError(t, add(mgr, recFn))
+	require.NoError(t, add(mgr, recFn, mgr.GetCache()))
 
 	testutils.StartManager(ctx, t, mgr)
 
@@ -456,11 +456,11 @@ func setupController(ctx context.Context, mgr manager.Manager, wm *watch.Manager
 		fakes.WithName("no-pod"),
 	)
 
-	rec, err := newReconciler(mgr, cacheManager, tracker, func(context.Context) (*v1.Pod, error) { return pod, nil }, nil)
+	rec, err := newReconciler(mgr, cacheManager, tracker, func(context.Context) (*v1.Pod, error) { return pod, nil }, nil, mgr.GetClient(), mgr.GetCache())
 	if err != nil {
 		return nil, fmt.Errorf("creating reconciler: %w", err)
 	}
-	err = add(mgr, rec)
+	err = add(mgr, rec, mgr.GetCache())
 	if err != nil {
 		return nil, fmt.Errorf("adding reconciler to manager: %w", err)
 	}
@@ -634,8 +634,8 @@ func TestConfig_Retries(t *testing.T) {
 		fakes.WithName("no-pod"),
 	)
 
-	rec, _ := newReconciler(mgr, cacheManager, tracker, func(context.Context) (*v1.Pod, error) { return pod, nil }, nil)
-	err = add(mgr, rec)
+	rec, _ := newReconciler(mgr, cacheManager, tracker, func(context.Context) (*v1.Pod, error) { return pod, nil }, nil, mgr.GetClient(), mgr.GetCache())
+	err = add(mgr, rec, mgr.GetCache())
 	if err != nil {
 		t.Fatal(err)
 	}

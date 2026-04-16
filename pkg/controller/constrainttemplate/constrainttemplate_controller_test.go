@@ -429,12 +429,12 @@ func TestReconcile(t *testing.T) {
 	sharedWebhookCache := webhookCache
 	setVAPTestGlobals(t, &admissionregistrationv1beta1.SchemeGroupVersion)
 
-	rec, err := newReconciler(mgr, cfClient, wm, tracker, constraintEvents, constraintEvents, func(context.Context) (*corev1.Pod, error) { return pod, nil }, webhookCache, processExcluder)
+	rec, err := newReconciler(mgr, cfClient, wm, tracker, constraintEvents, constraintEvents, func(context.Context) (*corev1.Pod, error) { return pod, nil }, webhookCache, processExcluder, mgr.GetClient(), mgr.GetCache())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = add(mgr, rec, constraintTemplateEvents)
+	err = add(mgr, rec, constraintTemplateEvents, mgr.GetCache())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2245,12 +2245,12 @@ violation[{"msg": "denied!"}] {
 	constraintTemplateEvents := make(chan event.GenericEvent, 1024)
 	processExcluder := process.Get()
 	processExcluder.Add(getMatchEntryConfig())
-	rec, err := newReconciler(mgr, cfClient, wm, tracker, constraintEvents, nil, func(context.Context) (*corev1.Pod, error) { return pod, nil }, nil, processExcluder)
+	rec, err := newReconciler(mgr, cfClient, wm, tracker, constraintEvents, nil, func(context.Context) (*corev1.Pod, error) { return pod, nil }, nil, processExcluder, mgr.GetClient(), mgr.GetCache())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = add(mgr, rec, constraintTemplateEvents)
+	err = add(mgr, rec, constraintTemplateEvents, mgr.GetCache())
 	if err != nil {
 		t.Fatal(err)
 	}

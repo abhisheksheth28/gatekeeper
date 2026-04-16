@@ -52,10 +52,10 @@ func TestReconcile_E2E(t *testing.T) {
 		return pod, nil
 	}
 	// Wrap the controller Reconciler so it writes each request to a map when it is finished reconciling
-	originalReconciler := newReconciler(mgr, export.NewSystem(), auditConnectionName, getPod)
+	originalReconciler := newReconciler(mgr, export.NewSystem(), auditConnectionName, getPod, mgr.GetClient(), mgr.GetCache())
 	wrappedReconciler, requests := testutils.SetupTestReconcile(originalReconciler)
 	// Register the controller with the manager
-	require.NoError(t, add(mgr, wrappedReconciler))
+	require.NoError(t, add(mgr, wrappedReconciler, mgr.GetCache()))
 	// Start the manager and let it run in the background
 	testutils.StartManager(ctx, t, mgr)
 
@@ -195,6 +195,9 @@ func TestReconcile_ExportSystem_Failures(t *testing.T) {
 		return pod, nil
 	}
 
+	// Start the manager so the cache is available for PodStatus reads
+	testutils.StartManager(ctx, t, mgr)
+
 	t.Run("Reconcile called for Connection create, upsert fails, and status error", func(t *testing.T) {
 		connObj := connectionv1alpha1.Connection{
 			ObjectMeta: metav1.ObjectMeta{
@@ -225,6 +228,8 @@ func TestReconcile_ExportSystem_Failures(t *testing.T) {
 		reconciler := Reconciler{
 			reader:              directK8sClient,
 			writer:              directK8sClient,
+			podStatusWriter:     directK8sClient,
+			podStatusCache:      mgr.GetCache(),
 			scheme:              mgr.GetScheme(),
 			system:              fakeExportSystem,
 			auditConnectionName: auditConnectionName,
@@ -357,6 +362,8 @@ func TestReconcile_Client_Failures(t *testing.T) {
 		reconciler := Reconciler{
 			reader:              fakeClient,
 			writer:              fakeClient,
+			podStatusWriter:     fakeClient,
+			podStatusCache:      mgr.GetCache(),
 			scheme:              mgr.GetScheme(),
 			system:              fakeExportSystem,
 			auditConnectionName: auditConnectionName,
@@ -397,10 +404,10 @@ func TestReconcile_ConnectionPodStatus(t *testing.T) {
 	os.Setenv("POD_NAME", "no-pod")
 
 	// Wrap the controller Reconciler so it writes each request to a map when it is finished reconciling
-	originalReconciler := newReconciler(mgr, export.NewSystem(), auditConnectionName, getPod)
+	originalReconciler := newReconciler(mgr, export.NewSystem(), auditConnectionName, getPod, mgr.GetClient(), mgr.GetCache())
 	wrappedReconciler, requests := testutils.SetupTestReconcile(originalReconciler)
 	// Register the controller with the manager
-	require.NoError(t, add(mgr, wrappedReconciler))
+	require.NoError(t, add(mgr, wrappedReconciler, mgr.GetCache()))
 	// Start the manager and let it run in the background
 	testutils.StartManager(ctx, t, mgr)
 
@@ -506,10 +513,10 @@ func TestReconcile_UnsupportedConnectionName(t *testing.T) {
 		return pod, nil
 	}
 	// Wrap the controller Reconciler so it writes each request to a map when it is finished reconciling
-	originalReconciler := newReconciler(mgr, export.NewSystem(), auditConnectionNameGood, getPod)
+	originalReconciler := newReconciler(mgr, export.NewSystem(), auditConnectionNameGood, getPod, mgr.GetClient(), mgr.GetCache())
 	wrappedReconciler, requests := testutils.SetupTestReconcile(originalReconciler)
 	// Register the controller with the manager
-	require.NoError(t, add(mgr, wrappedReconciler))
+	require.NoError(t, add(mgr, wrappedReconciler, mgr.GetCache()))
 	// Start the manager and let it run in the background
 	testutils.StartManager(ctx, t, mgr)
 

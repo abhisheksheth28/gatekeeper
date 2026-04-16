@@ -37,6 +37,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	apiTypes "k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -54,6 +55,8 @@ func newReconciler(
 	newMutationObj func() client.Object,
 	mutatorFor func(client.Object) (types.Mutator, error),
 	events chan event.GenericEvent,
+	podStatusWriter client.Client,
+	podStatusCache cache.Cache,
 	reporter ctrlmutators.StatsReporter,
 ) *Reconciler {
 	cache := ctrlmutators.NewMutationCache()
@@ -61,18 +64,20 @@ func newReconciler(
 		reporter.RegisterTally(cache.TallyStatus, cache.TallyConflict)
 	}
 	r := &Reconciler{
-		system:         mutationSystem,
-		Client:         mgr.GetClient(),
-		tracker:        tracker,
-		getPod:         getPod,
-		scheme:         mgr.GetScheme(),
-		reporter:       reporter,
-		cache:          cache,
-		gvk:            mutationsv1.GroupVersion.WithKind(kind),
-		newMutationObj: newMutationObj,
-		mutatorFor:     mutatorFor,
-		log:            logf.Log.WithName("controller").WithValues(logging.Process, fmt.Sprintf("%s_controller", strings.ToLower(kind))),
-		events:         events,
+		system:          mutationSystem,
+		Client:          mgr.GetClient(),
+		podStatusWriter: podStatusWriter,
+		podStatusCache:  podStatusCache,
+		tracker:         tracker,
+		getPod:          getPod,
+		scheme:          mgr.GetScheme(),
+		reporter:        reporter,
+		cache:           cache,
+		gvk:             mutationsv1.GroupVersion.WithKind(kind),
+		newMutationObj:  newMutationObj,
+		mutatorFor:      mutatorFor,
+		log:             logf.Log.WithName("controller").WithValues(logging.Process, fmt.Sprintf("%s_controller", strings.ToLower(kind))),
+		events:          events,
 	}
 	if getPod == nil {
 		r.getPod = r.defaultGetPod
@@ -83,9 +88,11 @@ func newReconciler(
 // Reconciler reconciles mutator objects.
 type Reconciler struct {
 	client.Client
-	gvk            schema.GroupVersionKind
-	newMutationObj func() client.Object
-	mutatorFor     func(client.Object) (types.Mutator, error)
+	gvk             schema.GroupVersionKind
+	newMutationObj  func() client.Object
+	mutatorFor      func(client.Object) (types.Mutator, error)
+	podStatusWriter client.Client
+	podStatusCache  cache.Cache
 
 	system   *mutation.System
 	tracker  *readiness.Tracker
@@ -204,7 +211,7 @@ func (r *Reconciler) getOrCreatePodStatus(ctx context.Context, mutatorID types.I
 	}
 
 	key := apiTypes.NamespacedName{Name: sName, Namespace: pod.Namespace}
-	if err := r.Get(ctx, key, statusObj); err != nil {
+	if err := r.podStatusCache.Get(ctx, key, statusObj); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return nil, err
 		}
@@ -216,7 +223,7 @@ func (r *Reconciler) getOrCreatePodStatus(ctx context.Context, mutatorID types.I
 	if err != nil {
 		return nil, err
 	}
-	if err := r.Create(ctx, statusObj); err != nil {
+	if err := r.podStatusWriter.Create(ctx, statusObj); err != nil {
 		return nil, err
 	}
 	return statusObj, nil
@@ -288,7 +295,7 @@ func (r *Reconciler) reconcileDeleted(ctx context.Context, id types.ID) error {
 	status := &statusv1beta1.MutatorPodStatus{}
 	status.SetName(sName)
 	status.SetNamespace(pod.Namespace)
-	if err = r.Delete(ctx, status); err != nil && !apierrors.IsNotFound(err) {
+	if err = r.podStatusWriter.Delete(ctx, status); err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 
@@ -326,7 +333,7 @@ func (r *Reconciler) updateStatus(ctx context.Context, id types.ID, updates ...s
 		update(status)
 	}
 
-	err = r.Update(ctx, status)
+	err = r.podStatusWriter.Update(ctx, status)
 	if err != nil {
 		r.log.Error(err, "could not update mutator status")
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/readiness"
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -24,9 +25,11 @@ import (
 const eventQueueSize = 1024
 
 type Adder struct {
-	MutationSystem *mutation.System
-	Tracker        *readiness.Tracker
-	GetPod         func(context.Context) (*corev1.Pod, error)
+	MutationSystem  *mutation.System
+	Tracker         *readiness.Tracker
+	GetPod          func(context.Context) (*corev1.Pod, error)
+	PodStatusWriter client.Client
+	PodStatusCache  cache.Cache
 }
 
 func routeConflictEvents(ctx context.Context, events <-chan event.GenericEvent, assignCh, modifySetCh, assignImageCh chan<- event.GenericEvent) error {
@@ -81,11 +84,13 @@ func (a *Adder) Add(mgr manager.Manager) error {
 	reporter := ctrlmutators.NewStatsReporter()
 
 	assign := core.Adder{
-		Tracker:        a.Tracker,
-		GetPod:         a.GetPod,
-		MutationSystem: a.MutationSystem,
-		Kind:           "Assign",
-		NewMutationObj: func() client.Object { return &mutationsv1.Assign{} },
+		Tracker:         a.Tracker,
+		GetPod:          a.GetPod,
+		MutationSystem:  a.MutationSystem,
+		PodStatusWriter: a.PodStatusWriter,
+		PodStatusCache:  a.PodStatusCache,
+		Kind:            "Assign",
+		NewMutationObj:  func() client.Object { return &mutationsv1.Assign{} },
 		MutatorFor: func(obj client.Object) (types.Mutator, error) {
 			// The type is provided by the `NewObj` function above. If we
 			// are fed the wrong type, this is a non-recoverable error and we
@@ -106,11 +111,13 @@ func (a *Adder) Add(mgr manager.Manager) error {
 	}
 
 	modifySet := core.Adder{
-		Tracker:        a.Tracker,
-		GetPod:         a.GetPod,
-		MutationSystem: a.MutationSystem,
-		Kind:           "ModifySet",
-		NewMutationObj: func() client.Object { return &mutationsv1.ModifySet{} },
+		Tracker:         a.Tracker,
+		GetPod:          a.GetPod,
+		MutationSystem:  a.MutationSystem,
+		PodStatusWriter: a.PodStatusWriter,
+		PodStatusCache:  a.PodStatusCache,
+		Kind:            "ModifySet",
+		NewMutationObj:  func() client.Object { return &mutationsv1.ModifySet{} },
 		MutatorFor: func(obj client.Object) (types.Mutator, error) {
 			// The type is provided by the `NewObj` function above. If we
 			// are fed the wrong type, this is a non-recoverable error and we
@@ -131,11 +138,13 @@ func (a *Adder) Add(mgr manager.Manager) error {
 	}
 
 	assignImage := core.Adder{
-		Tracker:        a.Tracker,
-		GetPod:         a.GetPod,
-		MutationSystem: a.MutationSystem,
-		Kind:           "AssignImage",
-		NewMutationObj: func() client.Object { return &v1alpha1.AssignImage{} },
+		Tracker:         a.Tracker,
+		GetPod:          a.GetPod,
+		MutationSystem:  a.MutationSystem,
+		PodStatusWriter: a.PodStatusWriter,
+		PodStatusCache:  a.PodStatusCache,
+		Kind:            "AssignImage",
+		NewMutationObj:  func() client.Object { return &v1alpha1.AssignImage{} },
 		MutatorFor: func(obj client.Object) (types.Mutator, error) {
 			// The type is provided by the `NewObj` function above. If we
 			// are fed the wrong type, this is a non-recoverable error and we
@@ -156,11 +165,13 @@ func (a *Adder) Add(mgr manager.Manager) error {
 	}
 
 	assignMetadata := core.Adder{
-		Tracker:        a.Tracker,
-		GetPod:         a.GetPod,
-		MutationSystem: a.MutationSystem,
-		Kind:           "AssignMetadata",
-		NewMutationObj: func() client.Object { return &mutationsv1.AssignMetadata{} },
+		Tracker:         a.Tracker,
+		GetPod:          a.GetPod,
+		MutationSystem:  a.MutationSystem,
+		PodStatusWriter: a.PodStatusWriter,
+		PodStatusCache:  a.PodStatusCache,
+		Kind:            "AssignMetadata",
+		NewMutationObj:  func() client.Object { return &mutationsv1.AssignMetadata{} },
 		MutatorFor: func(obj client.Object) (types.Mutator, error) {
 			// The type is provided by the `NewObj` function above. If we
 			// are fed the wrong type, this is a non-recoverable error and we
@@ -187,4 +198,9 @@ func (a *Adder) InjectGetPod(getPod func(ctx context.Context) (*corev1.Pod, erro
 
 func (a *Adder) InjectMutationSystem(mutationSystem *mutation.System) {
 	a.MutationSystem = mutationSystem
+}
+
+func (a *Adder) InjectPodStatusClients(writer client.Client, podStatusCache cache.Cache) {
+	a.PodStatusWriter = writer
+	a.PodStatusCache = podStatusCache
 }
