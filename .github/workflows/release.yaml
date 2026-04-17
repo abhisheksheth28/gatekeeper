@@ -156,10 +156,12 @@ jobs:
           PLATFORMS: "linux-amd64 linux-arm64 darwin-amd64 darwin-arm64"
 
       - name: Create GitHub release
-        uses: marvinpinto/action-automatic-releases@919008cf3f741b179569b7a6fb4d8860689ab7f0 # v1.2.1
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
-          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-beta.') || contains(github.ref_name, '-rc.') }}
+          fail_on_unmatched_files: true
           files: |
             _dist/sha256sums.txt
             _dist/*.tar.gz
