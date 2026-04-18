@@ -161,6 +161,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-beta.') || contains(github.ref_name, '-rc.') }}
+          draft: ${{ contains(github.ref_name, '-beta.') || contains(github.ref_name, '-rc.') }}
           fail_on_unmatched_files: true
           files: |
             _dist/sha256sums.txt
