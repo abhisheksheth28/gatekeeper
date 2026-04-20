@@ -163,7 +163,7 @@ jobs:
           PLATFORMS: "linux-amd64 linux-arm64 darwin-amd64 darwin-arm64"
 
       - name: Generate release notes with git-cliff
-        uses: orhun/git-cliff-action@4a4a951bc43fafe41cd2348e181853f52356bee7 # v4.5.1
+        uses: orhun/git-cliff-action@c93ef52f3d0ddcdcc9bd5447d98d458a11cd4f72 # v4.7.1
         with:
           config: cliff.toml
           args: --latest --strip header --no-exec
