@@ -1,7 +1,5 @@
 # git-cliff configuration for Gatekeeper release notes.
-# Generates categorized release notes from conventional commits between tags.
-# Docs: https://git-cliff.org/docs/configuration
-# GitHub integration: https://git-cliff.org/docs/integration/github
+# Generates categorized release notes from conventional commits.
 
 [remote.github]
 owner = "open-policy-agent"
@@ -45,9 +43,9 @@ commit_preprocessors = [
   { pattern = '\s*\(#\d+\)', replace = "" },
 ]
 
-# Types mirror the allowlist in .github/semantic.yml (semantic-pull-requests).
+# mirrors the list in .github/semantic.yml.
 # HTML comment prefixes (<!-- N -->) control group display order.
-# Any commit not matching a rule is grouped under "Other Changes".
+# any commit not matching a rule will be under "Other Changes".
 commit_parsers = [
   { message = "^feat", group = "<!-- 00 -->🚀 Features" },
   { message = "^fix", group = "<!-- 01 -->🐛 Bug Fixes" },
@@ -59,10 +57,11 @@ commit_parsers = [
   { message = "^style", group = "<!-- 07 -->💅 Styling" },
   { message = "^build", group = "<!-- 08 -->🏗️ Build System" },
   { message = "^ci", group = "<!-- 09 -->🤖 Continuous Integration" },
-  # Dependency bumps: both "chore(deps)" and dependabot's "chore: bump ..." pattern.
+  # dependency bumps: both "chore(deps)" and dependabot's "chore: bump ..." pattern.
   { message = "^chore\\(deps\\)", group = "<!-- 10 -->📦 Dependencies" },
   { message = "(?i)^chore.*: bump ", group = "<!-- 10 -->📦 Dependencies" },
-  { message = "^chore\\(release\\):", skip = true },
+  # skip release prep commits
+  { message = "^chore: [Pp]repare v", skip = true },
   { message = "^chore", group = "<!-- 11 -->🧹 Chores" },
   { message = ".*", group = "<!-- 12 -->Other Changes" },
 ]
