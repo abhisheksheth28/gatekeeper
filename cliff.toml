@@ -6,26 +6,22 @@
 [remote.github]
 owner = "open-policy-agent"
 repo = "gatekeeper"
-# token is provided via GITHUB_TOKEN env var in CI
+# token via GITHUB_TOKEN env var in CI
 
 [changelog]
 header = ""
-# Groups are sorted alphabetically; HTML comment prefixes <!-- N --> control
-# display order. The striptags filter removes them before rendering.
-# Merge commits are filtered out to reduce noise.
-# Ref: https://git-cliff.org/docs/tips-and-tricks
-#
-# Entry format matches marvinpinto's style:
-#   - commit message (#PR) ([Author](commit-url))
-# Uses GitHub API via commit.remote.* for PR number and author commit links.
 body = """
+{%- macro remote_url() -%}
+  https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}
+{%- endmacro -%}
+
 {% for group, commits in commits | filter(attribute="merge_commit", value=false) | group_by(attribute="group") %}
-### {{ group | striptags | trim | upper_first }}
+## {{ group | striptags | trim | upper_first }}
 
 {% for commit in commits -%}
 - {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | upper_first | trim }}\
-{% if commit.remote.pr_number %} ([#{{ commit.remote.pr_number }}](https://github.com/open-policy-agent/gatekeeper/pull/{{ commit.remote.pr_number }}))\
-{% endif %} ([{{ commit.author.name }}](https://github.com/open-policy-agent/gatekeeper/commit/{{ commit.id }}))
+{% if commit.remote.pr_number %} ([#{{ commit.remote.pr_number }}]({{ self::remote_url() }}/pull/{{ commit.remote.pr_number }}))\
+{% endif %} ([{{ commit.author.name }}]({{ self::remote_url() }}/commit/{{ commit.id }}))
 {% endfor %}
 {% endfor %}
 """
@@ -49,21 +45,20 @@ commit_preprocessors = [
   { pattern = '\s*\(#\d+\)', replace = "" },
 ]
 
-# Category mapping: conventional-commit type -> release-notes section.
 # Types mirror the allowlist in .github/semantic.yml (semantic-pull-requests).
 # HTML comment prefixes (<!-- N -->) control group display order.
 # Any commit not matching a rule is grouped under "Other Changes".
 commit_parsers = [
-  { message = "^feat", group = "<!-- 0 -->🚀 Features" },
-  { message = "^fix", group = "<!-- 1 -->🐛 Bug Fixes" },
-  { message = "^perf", group = "<!-- 2 -->⚡ Performance" },
-  { message = "^refactor", group = "<!-- 3 -->♻️ Refactors" },
-  { message = "^revert", group = "<!-- 4 -->⏪ Reverts" },
-  { message = "^docs", group = "<!-- 5 -->📚 Documentation" },
-  { message = "^test", group = "<!-- 6 -->✅ Tests" },
-  { message = "^style", group = "<!-- 7 -->💅 Styling" },
-  { message = "^build", group = "<!-- 8 -->🏗️ Build System" },
-  { message = "^ci", group = "<!-- 9 -->🤖 Continuous Integration" },
+  { message = "^feat", group = "<!-- 00 -->🚀 Features" },
+  { message = "^fix", group = "<!-- 01 -->🐛 Bug Fixes" },
+  { message = "^perf", group = "<!-- 02 -->⚡ Performance" },
+  { message = "^refactor", group = "<!-- 03 -->♻️ Refactors" },
+  { message = "^revert", group = "<!-- 04 -->⏪ Reverts" },
+  { message = "^docs", group = "<!-- 05 -->📚 Documentation" },
+  { message = "^test", group = "<!-- 06 -->✅ Tests" },
+  { message = "^style", group = "<!-- 07 -->💅 Styling" },
+  { message = "^build", group = "<!-- 08 -->🏗️ Build System" },
+  { message = "^ci", group = "<!-- 09 -->🤖 Continuous Integration" },
   # Dependency bumps: both "chore(deps)" and dependabot's "chore: bump ..." pattern.
   { message = "^chore\\(deps\\)", group = "<!-- 10 -->📦 Dependencies" },
   { message = "(?i)^chore.*: bump ", group = "<!-- 10 -->📦 Dependencies" },
@@ -71,4 +66,3 @@ commit_parsers = [
   { message = "^chore", group = "<!-- 11 -->🧹 Chores" },
   { message = ".*", group = "<!-- 12 -->Other Changes" },
 ]
-
