@@ -41,6 +41,8 @@ sort_commits = "oldest"
 # GitHub API provides proper PR links via commit.remote.pr_number.
 commit_preprocessors = [
   { pattern = '\s*\(#\d+\)', replace = "" },
+  # Strip everything after the first line (removes body, Signed-off-by, etc.)
+  { pattern = '\n[\s\S]*', replace = "" },
 ]
 
 # mirrors the list in .github/semantic.yml.
