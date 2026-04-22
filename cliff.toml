@@ -1,5 +1,6 @@
 # git-cliff configuration for Gatekeeper release notes.
 # Generates categorized release notes from conventional commits.
+# dummy comment
 
 [remote.github]
 owner = "open-policy-agent"
