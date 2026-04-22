@@ -18,9 +18,7 @@ body = """
 ## {{ group | striptags | trim | upper_first }}
 
 {% for commit in commits -%}
-- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | upper_first | trim }}\
-{% if commit.remote.pr_number %} ([#{{ commit.remote.pr_number }}]({{ self::remote_url() }}/pull/{{ commit.remote.pr_number }}))\
-{% endif %} ([{{ commit.author.name }}]({{ self::remote_url() }}/commit/{{ commit.id }}))
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | upper_first | trim }} ([{{ commit.author.name }}]({{ self::remote_url() }}/commit/{{ commit.id }}))
 {% endfor %}
 {% endfor %}
 """
@@ -38,11 +36,9 @@ tag_pattern = "v[0-9].*"
 topo_order = false
 sort_commits = "oldest"
 
-# Strip inline PR references like "(#1234)" from commit messages since the
-# GitHub API provides proper PR links via commit.remote.pr_number.
+# Linkify inline PR references like "(#1234)" in commit messages.
+# Strip everything after the first line (removes body, Signed-off-by, etc.)
 commit_preprocessors = [
-  { pattern = '\s*\(#\d+\)', replace = "" },
-  # Strip everything after the first line (removes body, Signed-off-by, etc.)
   { pattern = '\n[\s\S]*', replace = "" },
 ]
 
