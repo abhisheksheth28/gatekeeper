@@ -8,6 +8,7 @@ env:
   IMAGE_REPO: openpolicyagent/gatekeeper
   CRD_IMAGE_REPO: openpolicyagent/gatekeeper-crds
   GATOR_IMAGE_REPO: openpolicyagent/gator
+  CHANGELOG_FILE: CHANGES.md
 
 permissions: read-all
 
@@ -22,7 +23,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Cleanup disk
-        if: false # FORK-TEST: not needed when docker steps are skipped
+        if: false # FORK-TEST
         run: |
             # Filter out local helm-gh-pages image so we don't delete it
             docker system prune -a -f --filter "label!=org.opencontainers.image.source=https://github.com/stefanprodan/alpine-base"
@@ -53,7 +54,7 @@ jobs:
           echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
 
       - name: Login to GitHub Container Registry
-        if: false # FORK-TEST: skip ghcr login
+        if: false # FORK-TEST
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ghcr.io
@@ -61,7 +62,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish release
-        if: false # FORK-TEST: skip docker push
+        if: false # FORK-TEST
         run: |
           make docker-login
 
@@ -112,14 +113,14 @@ jobs:
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Bootstrap e2e
-        if: false # FORK-TEST: skip e2e bootstrap
+        if: false # FORK-TEST
         run: |
           mkdir -p $GITHUB_WORKSPACE/bin
           echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
           make e2e-bootstrap
 
       - name: Verify release
-        if: false # FORK-TEST: skip e2e verify (needs pushed image)
+        if: false # FORK-TEST
         run: |
           make e2e-verify-release IMG=${{ env.IMAGE_REPO }}:${TAG} USE_LOCAL_IMG=false
 
@@ -168,7 +169,7 @@ jobs:
           config: cliff.toml
           args: --latest --strip header --no-exec
         env:
-          OUTPUT: CHANGES.md
+          OUTPUT: ${{ env.CHANGELOG_FILE }}
           GITHUB_REPO: ${{ github.repository }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -186,14 +187,14 @@ jobs:
           # create release
           gh release create "${TAG}" \
             --title "${TAG}" \
-            --notes-file CHANGES.md \
+            --notes-file "${CHANGELOG_FILE}" \
             --verify-tag \
             ${PRERELEASE_FLAG} \
             _dist/sha256sums.txt \
             _dist/*.tar.gz
 
       - name: Publish Helm chart
-        if: false # FORK-TEST: skip helm publish (needs gh-pages branch)
+        if: false # FORK-TEST
         uses: stefanprodan/helm-gh-pages@0ad2bb377311d61ac04ad9eb6f252fb68e207260 # v1.7.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
