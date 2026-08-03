@@ -102,8 +102,8 @@ jobs:
     name: Patch ${{ matrix.image }}:${{ matrix.release }}
     needs: resolve-releases
     runs-on: ubuntu-22.04
-    # arm64/arm-v7 run under emulation (patch + SBOM), so more time.
-    timeout-minutes: 90
+    # arm64 patch runs under slow emulation so allow generous time.
+    timeout-minutes: 150
     permissions:
       contents: read
       packages: write # push to GHCR (staging intermediate and/or canonical); only when target != dry-run
@@ -340,7 +340,7 @@ jobs:
             --library-patch-level minor \
             --toolchain-patch-level patch \
             --ignore-errors \
-            --timeout 30m \
+            --timeout 90m \
             "${out[@]}" \
             -t "${INTERMEDIATE_REPO}:${tag}"
 
