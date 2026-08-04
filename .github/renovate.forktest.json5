@@ -11,6 +11,7 @@
   minimumReleaseAge: "3 days",
   postUpdateOptions: ["gomodTidy"], // run `go mod tidy` after gomod changes
   dependencyDashboard: true,
+  dependencyDashboardApproval: true,
   labels: ["dependencies"],
 
   // drive master and the maintained release branch from one config
@@ -21,6 +22,7 @@
   osvVulnerabilityAlerts: true,
   vulnerabilityAlerts: {
     enabled: true,
+    dependencyDashboardApproval: true, // security updates bypass rate limits, so gate them explicitly
     vulnerabilityFixStrategy: "lowest", // minimal fixed version == Copa --library-patch-level minor
     labels: ["security", "backport"],
   },
