@@ -20,6 +20,7 @@
   // (branch-content-driven, offline DB) is what detects vulnerabilities.
   osvVulnerabilityAlerts: true,
   vulnerabilityAlerts: {
+    enabled: true,
     vulnerabilityFixStrategy: "lowest", // minimal fixed version == Copa --library-patch-level minor
     labels: ["security", "backport"],
   },
@@ -28,7 +29,7 @@
     // master ($default): reproduce Dependabot behavior
     {
       // gomod is patch-only on master (Dependabot ignores semver minor + major)
-      matchBaseBranches: ["$default"],
+      matchBaseBranches: ["copa-patching-4480"],
       matchManagers: ["gomod"],
       matchUpdateTypes: ["minor", "major"],
       enabled: false,
