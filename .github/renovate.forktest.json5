@@ -1,0 +1,54 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+
+  extends: ["config:recommended"],
+
+  schedule: ["at any time"],
+
+  semanticCommits: "enabled",
+  semanticCommitType: "chore", 
+  minimumReleaseAge: "3 days", 
+  postUpdateOptions: ["gomodTidy"], // run `go mod tidy` after gomod changes
+  dependencyDashboard: true,
+  labels: ["dependencies"],
+
+  // drive master and the maintained release branch from one config
+  baseBranchPatterns: ["$default", "/^release-3\\.\\d+$/"],
+
+  // GitHubs Dependabot alerts are computed against the DEFAULT branch only, so OSV
+  // (branch-content-driven, offline DB) is what detects vulnerabilities.
+  osvVulnerabilityAlerts: true,
+  vulnerabilityAlerts: {
+    vulnerabilityFixStrategy: "lowest", // minimal fixed version == Copa --library-patch-level minor
+    labels: ["security", "backport"],
+  },
+
+  packageRules: [
+    // master ($default): reproduce Dependabot behavior
+    {
+      // gomod is patch-only on master (Dependabot ignores semver minor + major)
+      matchBaseBranches: ["$default"],
+      matchManagers: ["gomod"],
+      matchUpdateTypes: ["minor", "major"],
+      enabled: false,
+    },
+    {
+      // group k8s.io / sigs.k8s.io (Dependabot "k8s" group)
+      matchManagers: ["gomod"],
+      matchPackageNames: ["k8s.io/**", "sigs.k8s.io/**"],
+      groupName: "k8s",
+    },
+    {
+      // group all GitHub Actions (Dependabot github-actions group)
+      matchManagers: ["github-actions"],
+      groupName: "github-actions",
+    },
+
+    // release-3.X: SECURITY-ONLY, human-reviewed
+    {
+      // disable routine (non-security) updates on release branches
+      matchBaseBranches: ["/^release-3\\.\\d+$/"],
+      enabled: false,
+    },
+  ],
+}
