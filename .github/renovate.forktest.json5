@@ -5,6 +5,19 @@
 
   schedule: ["at any time"],
 
+  // Match the four ecosystems currently managed by Dependabot.
+  enabledManagers: ["npm", "github-actions", "gomod", "dockerfile"],
+  // config:recommended ignores test/**, but Dependabot manages four Dockerfiles there.
+  ignorePaths: [
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/vendor/**",
+    "**/examples/**",
+    "**/__tests__/**",
+    "**/tests/**",
+    "**/__fixtures__/**",
+  ],
+
   semanticCommits: "enabled",
   semanticCommitType: "chore", 
   minimumReleaseAge: "3 days", 
@@ -49,6 +62,11 @@
       // disable routine (non-security) updates on release branches
       matchBaseBranches: ["/^release-3\\.\\d+$/"],
       enabled: false,
+    },
+    {
+      // Security fixes must override routine-update restrictions on every branch.
+      matchJsonata: ["$exists(vulnerabilityFixVersion)"],
+      enabled: true,
     },
   ],
 }
