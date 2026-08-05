@@ -43,8 +43,9 @@
       groupName: "k8s",
     },
     {
-      // group all GitHub Actions (Dependabot github-actions group)
+      // Reproduce Dependabot's group features.
       matchManagers: ["github-actions"],
+      matchDepTypes: ["action"],
       groupName: "github-actions",
       separateMajorMinor: false,
     },
