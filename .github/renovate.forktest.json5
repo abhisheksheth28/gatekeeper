@@ -14,7 +14,8 @@
   dependencyDashboardApproval: true,
   labels: ["dependencies"],
 
-  // drive master and the maintained release branch from one config
+  // Policy default: the default branch + any maintained release line. The workflow narrows
+  // the actually-processed branches to the n/n-1 lines at runtime via RENOVATE_BASE_BRANCH_PATTERNS.
   baseBranchPatterns: ["$default", "/^release-3\\.\\d+$/"],
 
   // GitHubs Dependabot alerts are computed against the DEFAULT branch only, so OSV
@@ -24,7 +25,7 @@
     enabled: true,
     dependencyDashboardApproval: true, // security updates bypass rate limits, so gate them explicitly
     vulnerabilityFixStrategy: "lowest", // minimal fixed version == Copa --library-patch-level minor
-    labels: ["security", "backport"],
+    labels: ["security"], // backport is added per-branch below so default-branch security PRs are not mislabeled
   },
 
   packageRules: [
@@ -50,7 +51,12 @@
       separateMajorMinor: false,
     },
 
-    // release-3.X: SECURITY-ONLY, human-reviewed
+    // Maintained release branches: SECURITY-ONLY, human-reviewed.
+    {
+      // Release-branch PRs are backports; keep backport off default-branch security PRs.
+      matchBaseBranches: ["/^release-3\\.\\d+$/"],
+      addLabels: ["backport"],
+    },
     {
       // Enable lookups so OSV can force fixes for indirect Go dependencies.
       matchBaseBranches: ["/^release-3\\.\\d+$/"],
