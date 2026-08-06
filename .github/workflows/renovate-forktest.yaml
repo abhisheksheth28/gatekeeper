@@ -47,19 +47,19 @@ jobs:
 
       # Narrow the processed base branches to the maintained n/n-1 release lines at runtime,
       # so the config's release-branch policy stays generic (no per-release churn).
+      # Resolve from the release branches themselves.
       - name: Resolve maintained release branches
         run: |
           set -euo pipefail
-          stable=$(git tag --list | awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/' | sort -V)
-          if [ -z "$stable" ]; then echo "no stable release tags found" >&2; exit 1; fi
-          latest=$(printf '%s\n' "$stable" | tail -1)
-          latest_minor=${latest%.*}
-          patterns="\"\$default\",\"release-${latest_minor#v}\""
-          prev=$(printf '%s\n' "$stable" | awk -v m="${latest_minor}." 'index($0, m) != 1' | tail -1)
-          if [ -n "$prev" ]; then
-            prev_minor=${prev%.*}
-            patterns="$patterns,\"release-${prev_minor#v}\""
-          fi
+          maintained=$(
+            git ls-remote --heads origin \
+              | sed 's#.*refs/heads/##' \
+              | grep -E '^release-[0-9]+\.[0-9]+$' \
+              | sort -V | tail -2
+          ) || true
+          if [ -z "${maintained:-}" ]; then echo "no release-*.* branches found on origin" >&2; exit 1; fi
+          patterns='"$default"'
+          for b in $maintained; do patterns="$patterns,\"$b\""; done
           echo "RENOVATE_BASE_BRANCH_PATTERNS=[$patterns]" >> "$GITHUB_ENV"
           echo "Resolved RENOVATE_BASE_BRANCH_PATTERNS=[$patterns]"
 
