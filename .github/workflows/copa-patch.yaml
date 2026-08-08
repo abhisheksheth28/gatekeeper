@@ -250,14 +250,20 @@ jobs:
           set -euo pipefail
           mkdir -p copa-reports
           total=0
+          stdlib_total=0
           for p in $PATCH_ARCHES; do
             a="${p#linux/}"
             trivy image --quiet --platform "$p" --pkg-types library --ignore-unfixed \
               -f json -o "copa-reports/${a}.json" "${SOURCE_REF}"
-            total=$(( total + $(jq '[.Results[]?.Vulnerabilities[]?] | length' "copa-reports/${a}.json") ))
+            arch_total=$(jq '[.Results[]?.Vulnerabilities[]?] | length' "copa-reports/${a}.json")
+            arch_stdlib=$(jq '[.Results[]?.Vulnerabilities[]? | select(.PkgName == "stdlib")] | length' "copa-reports/${a}.json")
+            total=$(( total + arch_total ))
+            stdlib_total=$(( stdlib_total + arch_stdlib ))
+            echo "  ${a}: fixable=${arch_total} (stdlib=${arch_stdlib})"
           done
           echo "before=${total}" >> "$GITHUB_OUTPUT"
-          echo "Fixable library CVEs in ${SOURCE_REF} (${PATCH_ARCHES}): ${total}"
+          echo "before_stdlib=${stdlib_total}" >> "$GITHUB_OUTPUT"
+          echo "Fixable library CVEs in ${SOURCE_REF} (${PATCH_ARCHES}): ${total} (stdlib=${stdlib_total})"
 
       # Stop if the source is already clean, and stay idempotent by also stopping if an
       # existing `-patched` already fixes everything currently fixable.
@@ -354,9 +360,11 @@ jobs:
           MODE: ${{ steps.cfg.outputs.mode }}
           REV: ${{ steps.rev.outputs.rev }}
           BEFORE: ${{ steps.scan.outputs.before }}
+          BEFORE_STDLIB: ${{ steps.scan.outputs.before_stdlib }}
         run: |
           set -euo pipefail
           total=0
+          stdlib_total=0
           for p in $PATCH_ARCHES; do
             a="${p#linux/}"
             if [[ "${MODE}" == "dry-run" ]]; then
@@ -366,15 +374,25 @@ jobs:
               trivy image --quiet --platform "$p" --pkg-types library --ignore-unfixed \
                 -f json -o "scan-after-${a}.json" "${PATCHED_REF}"
             fi
-            total=$(( total + $(jq '[.Results[]?.Vulnerabilities[]?] | length' "scan-after-${a}.json") ))
+            arch_total=$(jq '[.Results[]?.Vulnerabilities[]?] | length' "scan-after-${a}.json")
+            arch_stdlib=$(jq '[.Results[]?.Vulnerabilities[]? | select(.PkgName == "stdlib")] | length' "scan-after-${a}.json")
+            total=$(( total + arch_total ))
+            stdlib_total=$(( stdlib_total + arch_stdlib ))
+            echo "  ${a}: fixable after=${arch_total} (stdlib=${arch_stdlib})"
           done
+          echo "CVE totals across ${PATCH_ARCHES}: before=${BEFORE} after=${total} | stdlib before=${BEFORE_STDLIB} after=${stdlib_total}"
           {
             echo "### ${IMAGE}:${RELEASE} → ${RELEASE}-${REV} (${MODE})"
             echo "- fixable library CVEs across ${PATCH_ARCHES}: before=**${BEFORE}**, after=**${total}**"
+            echo "- of which Go stdlib (toolchain): before=**${BEFORE_STDLIB}**, after=**${stdlib_total}**"
           } >> "$GITHUB_STEP_SUMMARY"
           if [[ "${total}" -ge "${BEFORE}" ]]; then
             echo "::error::patch did not reduce fixable CVEs (before=${BEFORE}, after=${total})"
             exit 1
+          fi
+          # Surface (don't silently mask) any stdlib CVEs left unfixed by --toolchain-patch-level.
+          if [[ "${stdlib_total}" -gt 0 ]]; then
+            echo "::warning::${stdlib_total} Go stdlib CVE(s) remain after toolchain patch (may require a newer Go minor)"
           fi
 
       # CANONICAL ONLY: re-attach the project's canonical trust (the same BuildKit SBOM + SLSA
