@@ -344,7 +344,7 @@ jobs:
             --report copa-reports/ \
             --pkg-types library \
             --library-patch-level minor \
-            --toolchain-patch-level patch \
+            --toolchain-patch-level minor \
             --ignore-errors \
             --timeout 90m \
             "${out[@]}" \
