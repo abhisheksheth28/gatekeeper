@@ -48,9 +48,9 @@ env:
   # Canonical registries. GHCR is also the source registry for the release images to patch.
   SOURCE_REGISTRY: "ghcr.io/open-policy-agent"
   DOCKERHUB_NAMESPACE: "openpolicyagent"
-  # Arches to patch. Any other arch in the source index (e.g. arm/v7) is passed through
-  # untouched by Copa and preserved (and attested) by the canonical re-wrap.
-  PATCH_ARCHES: "linux/amd64 linux/arm64"
+  # Arches to patch. Any other arch in the source index is passed through untouched by Copa
+  # and preserved (and attested) by the canonical re-wrap.
+  PATCH_ARCHES: "linux/amd64 linux/arm64 linux/arm/v7"
 
 jobs:
   resolve-releases:
@@ -252,7 +252,7 @@ jobs:
           total=0
           stdlib_total=0
           for p in $PATCH_ARCHES; do
-            a="${p#linux/}"
+            a="${p#linux/}"; a="${a//\//-}" # arm/v7 -> arm-v7 so the report is a flat file
             trivy image --quiet --platform "$p" --pkg-types library --ignore-unfixed \
               -f json -o "copa-reports/${a}.json" "${SOURCE_REF}"
             arch_total=$(jq '[.Results[]?.Vulnerabilities[]?] | length' "copa-reports/${a}.json")
@@ -284,7 +284,7 @@ jobs:
           if [[ "${MODE}" != "dry-run" ]] && crane digest "${PRIMARY_REPO}:${RELEASE}-patched" >/dev/null 2>&1; then
             total=0
             for p in $PATCH_ARCHES; do
-              a="${p#linux/}"
+              a="${p#linux/}"; a="${a//\//-}"
               trivy image --quiet --platform "$p" --pkg-types library --ignore-unfixed \
                 -f json -o "scan-existing-${a}.json" "${PRIMARY_REPO}:${RELEASE}-patched"
               total=$(( total + $(jq '[.Results[]?.Vulnerabilities[]?] | length' "scan-existing-${a}.json") ))
@@ -344,7 +344,7 @@ jobs:
             --report copa-reports/ \
             --pkg-types library \
             --library-patch-level minor \
-            --toolchain-patch-level minor \
+            --toolchain-patch-level patch \
             --ignore-errors \
             --timeout 90m \
             "${out[@]}" \
@@ -366,7 +366,7 @@ jobs:
           total=0
           stdlib_total=0
           for p in $PATCH_ARCHES; do
-            a="${p#linux/}"
+            a="${p#linux/}"; a="${a//\//-}"
             if [[ "${MODE}" == "dry-run" ]]; then
               trivy image --quiet --input "${PATCHED_REF}" --platform "$p" --pkg-types library --ignore-unfixed \
                 -f json -o "scan-after-${a}.json"
