@@ -48,8 +48,7 @@ env:
   # Canonical registries. GHCR is also the source registry for the release images to patch.
   SOURCE_REGISTRY: "ghcr.io/open-policy-agent"
   DOCKERHUB_NAMESPACE: "openpolicyagent"
-  # Arches to patch. Any other arch in the source index is passed through untouched by Copa
-  # and preserved (and attested) by the canonical re-wrap.
+  # Arches to patch (all platforms gatekeeper/gator publish).
   PATCH_ARCHES: "linux/amd64 linux/arm64 linux/arm/v7"
 
 jobs:
@@ -102,8 +101,7 @@ jobs:
     name: Patch ${{ matrix.image }}:${{ matrix.release }}
     needs: resolve-releases
     runs-on: ubuntu-22.04
-    # arm64 patch runs under slow emulation so allow generous time.
-    timeout-minutes: 150
+    timeout-minutes: 180
     permissions:
       contents: read
       packages: write # push to GHCR (staging intermediate and/or canonical); only when target != dry-run
@@ -346,7 +344,7 @@ jobs:
             --library-patch-level minor \
             --toolchain-patch-level patch \
             --ignore-errors \
-            --timeout 90m \
+            --timeout 120m \
             "${out[@]}" \
             -t "${INTERMEDIATE_REPO}:${tag}"
 
@@ -409,7 +407,7 @@ jobs:
           set -euo pipefail
           ghcr_ref="${SOURCE_REGISTRY}/${IMAGE}:${RELEASE}-${REV}"
           dh_ref="${DOCKERHUB_NAMESPACE}/${IMAGE}:${RELEASE}-${REV}"
-          # Preserve every arch present in the patched index (incl. arm/v7 passed through by Copa).
+          # Preserve every arch present in the patched index (amd64, arm64, arm/v7 are all patched).
           platforms=$(docker buildx imagetools inspect "${INTERMEDIATE_REF}" --raw \
             | jq -r '[ .manifests[]
                        | select(.platform != null and .platform.os != null and .platform.architecture != "unknown")

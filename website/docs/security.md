@@ -101,7 +101,7 @@ For a release `vX.Y.Z`, patched images are published under **new, separate** tag
 | `vX.Y.Z-R` | An **immutable** patch revision (`R` = `1`, `2`, …). Each run that fixes newly-available CVEs publishes the next number. |
 | `vX.Y.Z-patched` | A **floating** tag that always points at the newest `vX.Y.Z-R`. Use this to track the latest patched build of that release. |
 
-Only `linux/amd64` and `linux/arm64` are rebuilt; any other architecture in the release index (for example `linux/arm/v7`) is carried through unchanged.
+All published architectures `linux/amd64`, `linux/arm64`, and `linux/arm/v7` are rebuilt and patched.
 
 ## How patched images are produced
 
