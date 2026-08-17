@@ -38,15 +38,16 @@
   vulnerabilityAlerts: {
     enabled: true,
     vulnerabilityFixStrategy: "lowest", // take the earliest fixed version
+    minimumReleaseAge: "0",             // security fixes skip the routine cooldown
     labels: ["security"],               // `backport` is added per release branch below
   },
 
   packageRules: [
-    // ---- Default branch ----
+    // ---- Routine updates (default branch in practice) ----
     {
-      // gomod is patch-only on the default branch: disable minor + major.
-      // NOTE: if minor/major PRs still appear on the default branch, replace "$default" with "master".
-      matchBaseBranches: ["$default"],
+      // gomod routine updates are patch-only: disable minor + major. This applies to every processed
+      // branch, but release branches disable all routine updates anyway, so it only constrains the
+      // default branch. Security fixes are forced through separately (vulnerabilityAlerts).
       matchManagers: ["gomod"],
       matchUpdateTypes: ["minor", "major"],
       enabled: false,
