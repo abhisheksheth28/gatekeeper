@@ -18,6 +18,7 @@
   semanticCommits: "enabled",
   semanticCommitType: "chore",       // commit as chore(deps): — parsed by cliff.toml
   minimumReleaseAge: "3 days",       // cooldown to avoid just-published versions
+  minimumReleaseAgeBehaviour: "timestamp-optional", // don't stall versions that lack a release timestamp (else lowest security fixes get held)
   postUpdateOptions: ["gomodTidy"],  // run `go mod tidy` after gomod changes
   dependencyDashboard: true,         // tracking issue for pending updates
 
@@ -38,7 +39,6 @@
   vulnerabilityAlerts: {
     enabled: true,
     vulnerabilityFixStrategy: "lowest", // take the earliest fixed version
-    minimumReleaseAge: "0",             // security fixes skip the routine cooldown
     labels: ["security"],               // `backport` is added per release branch below
   },
 
