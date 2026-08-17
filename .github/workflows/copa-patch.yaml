@@ -14,8 +14,9 @@ name: copa-patch
 #                ghcr.io/open-policy-agent/* (GHCR). Only ever runs on the canonical repo.
 
 on:
-  schedule:
-    - cron: "17 8 * * 1"
+  # Weekly canonical run — gated OFF for the initial merge.
+  # schedule:
+  #   - cron: "17 8 * * 1"
   workflow_dispatch:
     inputs:
       release_tag:
@@ -314,8 +315,8 @@ jobs:
           echo "rev=${rev}" >> "$GITHUB_OUTPUT"
           echo "Revision: ${RELEASE}-${rev}"
 
-      # Report-driven multi-arch patch. Copa patches every arch with a report in copa-reports/
-      # (amd64+arm64) and passes any other arch in the source index (e.g. arm/v7) through
+      # Report-driven multi-arch patch. Copa patches every arch that has a report in copa-reports/
+      # (all of amd64/arm64/arm/v7) and passes any other arch in the source index through
       # untouched. In dry-run it writes a local OCI layout; otherwise it pushes to the
       # intermediate repo (which is the final image for `staging`, or the pre-attest input
       # for the `canonical` re-wrap).
@@ -348,6 +349,29 @@ jobs:
             "${out[@]}" \
             -t "${INTERMEDIATE_REPO}:${tag}"
 
+      # Guard: every target arch must be present in the pushed index. Copa silently *ignores* an
+      # arch it can't emulate instead of failing, so without this a drop would ship a -patched
+      # index missing an arch.
+      - name: Verify all target arches present
+        if: steps.gate.outputs.has_fixes == 'true' && steps.cfg.outputs.mode != 'dry-run'
+        env:
+          PATCHED_REF: ${{ steps.patch.outputs.patched_ref }}
+        run: |
+          set -euo pipefail
+          present=$(docker buildx imagetools inspect "${PATCHED_REF}" --raw \
+            | jq -r '.manifests[]? | select(.platform.os == "linux" and .platform.architecture != "unknown")
+                     | .platform | .os + "/" + .architecture + (if .variant then "/" + .variant else "" end)')
+          echo "Arches in ${PATCHED_REF}:"; echo "${present}"
+          spaced=" $(echo ${present}) "   # collapse to a single space-delimited line for matching
+          missing=""
+          for p in $PATCH_ARCHES; do
+            case "${spaced}" in *" ${p} "*) : ;; *) missing="${missing} ${p}" ;; esac
+          done
+          if [[ -n "${missing}" ]]; then
+            echo "::error::patched index ${PATCHED_REF} is missing target arch(es):${missing}"; exit 1
+          fi
+          echo "All target arches present in the patched index."
+
       # Verify the patch actually reduced CVEs on every patched arch; fail the cell otherwise.
       # This runs BEFORE anything is promoted or published to canonical, so a bad patch never
       # reaches users.
@@ -363,6 +387,14 @@ jobs:
           set -euo pipefail
           total=0
           stdlib_total=0
+          residual_md=""   # accumulates the per-arch list of packages left below their fixed version
+          # Build the summary table.
+          {
+            echo "### ${IMAGE}:${RELEASE} → ${RELEASE}-${REV} (${MODE})"
+            echo ""
+            echo "| Arch | fixable | stdlib |"
+            echo "| --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
           for p in $PATCH_ARCHES; do
             a="${p#linux/}"; a="${a//\//-}"
             if [[ "${MODE}" == "dry-run" ]]; then
@@ -374,21 +406,41 @@ jobs:
             fi
             arch_total=$(jq '[.Results[]?.Vulnerabilities[]?] | length' "scan-after-${a}.json")
             arch_stdlib=$(jq '[.Results[]?.Vulnerabilities[]? | select(.PkgName == "stdlib")] | length' "scan-after-${a}.json")
+            # Per-arch "before" = the source scan the scan step already wrote to copa-reports/.
+            arch_before=$(jq '[.Results[]?.Vulnerabilities[]?] | length' "copa-reports/${a}.json" 2>/dev/null || echo 0)
+            arch_before_stdlib=$(jq '[.Results[]?.Vulnerabilities[]? | select(.PkgName == "stdlib")] | length' "copa-reports/${a}.json" 2>/dev/null || echo 0)
             total=$(( total + arch_total ))
             stdlib_total=$(( stdlib_total + arch_stdlib ))
             echo "  ${a}: fixable after=${arch_total} (stdlib=${arch_stdlib})"
+            echo "| ${p} | ${arch_before} → ${arch_total} | ${arch_before_stdlib} → ${arch_stdlib} |" >> "$GITHUB_STEP_SUMMARY"
+            # Library packages Copa left below their fixed version on this arch (stdlib is reported separately).
+            pkgs=$(jq -r '[.Results[]?.Vulnerabilities[]? | select(.PkgName != "stdlib") | {p: .PkgName, i: .InstalledVersion, f: (.FixedVersion // "?")}]
+                          | group_by(.p + " " + .i)
+                          | map("- " + .[0].p + " " + .[0].i + " → needs " + ([.[].f] | unique | join(", ")))
+                          | .[]' "scan-after-${a}.json")
+            if [[ -n "${pkgs}" ]]; then
+              residual_md+=$'\n'"**${p}**"$'\n\n'"${pkgs}"$'\n'
+            fi
           done
           echo "CVE totals across ${PATCH_ARCHES}: before=${BEFORE} after=${total} | stdlib before=${BEFORE_STDLIB} after=${stdlib_total}"
-          {
-            echo "### ${IMAGE}:${RELEASE} → ${RELEASE}-${REV} (${MODE})"
-            echo "- fixable library CVEs across ${PATCH_ARCHES}: before=**${BEFORE}**, after=**${total}**"
-            echo "- of which Go stdlib (toolchain): before=**${BEFORE_STDLIB}**, after=**${stdlib_total}**"
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo "| **all** | **${BEFORE} → ${total}** | **${BEFORE_STDLIB} → ${stdlib_total}** |" >> "$GITHUB_STEP_SUMMARY"
+          # Surface library CVEs Copa could not fix. best effort
+          library_total=$(( total - stdlib_total ))
+          if [[ -n "${residual_md}" ]]; then
+            {
+              echo ""
+              echo "<details><summary>${library_total} fixable library CVE(s) remain; Copa could not reach these fixed versions</summary>"
+              echo ""
+              printf '%s\n' "${residual_md}"
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::${library_total} fixable library CVE(s) remain after patching."
+          fi
           if [[ "${total}" -ge "${BEFORE}" ]]; then
             echo "::error::patch did not reduce fixable CVEs (before=${BEFORE}, after=${total})"
             exit 1
           fi
-          # Surface (don't silently mask) any stdlib CVEs left unfixed by --toolchain-patch-level.
+          # Surface any stdlib CVEs left unfixed by --toolchain-patch-level.
           if [[ "${stdlib_total}" -gt 0 ]]; then
             echo "::warning::${stdlib_total} Go stdlib CVE(s) remain after toolchain patch (may require a newer Go minor)"
           fi
