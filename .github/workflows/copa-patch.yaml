@@ -38,8 +38,10 @@ on:
 # only when target != dry-run). Docker Hub uses username/token secrets, not a GITHUB scope.
 permissions: read-all
 
+# Serialize every run on a ref (weekly schedule + any manual dispatch) so two runs can't race
+# on the same vX.Y.Z-N revision number or -patched promotion. Queue rather than cancel.
 concurrency:
-  group: copa-patch-${{ github.ref }}-${{ inputs.release_tag }}
+  group: copa-patch-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -445,10 +447,13 @@ jobs:
             echo "::warning::${stdlib_total} Go stdlib CVE(s) remain after toolchain patch (may require a newer Go minor)"
           fi
 
-      # CANONICAL ONLY: re-attach the project's canonical trust (the same BuildKit SBOM + SLSA
-      # provenance the release images carry) by re-wrapping the verified patched image and
-      # publishing it to both canonical registries. `FROM <patched>` reuses the exact patched
-      # layers unchanged, so this only adds attestations — it does not rebuild.
+      # CANONICAL ONLY: re-attach the project's canonical trust by re-wrapping the verified
+      # patched image with the same attestation flags the release build uses (Makefile
+      # `_ATTESTATIONS`: --attest type=sbom --attest type=provenance,mode=max) and publishing to
+      # both canonical registries. `FROM <patched>` adds no filesystem layers, so this only
+      # attaches attestations — it does not rebuild. The SBOM is regenerated against the patched
+      # filesystem, so it reflects the patched module versions; the provenance documents this
+      # re-wrap step (built FROM the patched image), not the original from-source release build.
       - name: Re-wrap with attestations and publish to canonical
         id: rewrap
         if: steps.gate.outputs.has_fixes == 'true' && steps.cfg.outputs.mode == 'canonical'
@@ -546,17 +551,20 @@ jobs:
           else
             ref="${INTERMEDIATE_REPO}:${RELEASE}-${REV}"
           fi
-          # Distroless images have no shell, so exercise the entrypoint with --help.
-          # gator (cobra) exits 0; manager (Go flag pkg) exits 2 on usage — both prove the
-          # binary executes for this arch. Any other code (exec-format error, crash) fails.
-          set +e
-          docker run --rm --pull always "${ref}" --help >/dev/null 2>&1
-          ec=$?
-          set -e
-          if [[ "${ec}" != "0" && "${ec}" != "2" ]]; then
-            echo "::error::smoke test failed for ${ref} (exit ${ec})"; exit 1
-          fi
-          echo "Smoke: ${ref} entrypoint executed (exit ${ec})."
+          # Distroless images have no shell, so exercise the entrypoint with --help, once per
+          # patched arch (non-amd64 runs under QEMU). gator (cobra) exits 0; manager (Go flag
+          # pkg) exits 2 on usage — both prove the binary executes on that arch. Any other code
+          # (exec-format error, crash) fails the cell.
+          for p in $PATCH_ARCHES; do
+            set +e
+            docker run --rm --pull always --platform "$p" "${ref}" --help >/dev/null 2>&1
+            ec=$?
+            set -e
+            if [[ "${ec}" != "0" && "${ec}" != "2" ]]; then
+              echo "::error::smoke test failed for ${ref} on ${p} (exit ${ec})"; exit 1
+            fi
+            echo "Smoke: ${ref} (${p}) entrypoint executed (exit ${ec})."
+          done
 
       - name: Confirm no registry writes (dry-run)
         if: steps.gate.outputs.has_fixes == 'true' && steps.cfg.outputs.mode == 'dry-run'

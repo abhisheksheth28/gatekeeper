@@ -112,6 +112,16 @@ All published architectures `linux/amd64`, `linux/arm64`, and `linux/arm/v7` are
 
 Because the binaries are recompiled, patched images differ bit-for-bit from the originals (build timestamps, toolchain version, and so on), so their digests will not match the canonical `vX.Y.Z` image. This is expected.
 
+### Best-effort library patching
+
+Some fixable library CVEs may remain in a patched image. Copa upgrades vulnerable Go modules and runs `go mod tidy`, but a fix can be out of reach when:
+
+- the fixed version requires a **newer Go toolchain** than the rebuild uses;
+- a **transitive dependency** holds the module below its fixed version; or
+- module resolution is **not deterministic** — the same source can land different versions across architectures or across runs, so a package may be fixed on one architecture but not another, and re-running does not reliably help.
+
+Each run's job summary lists any packages that could not be raised to their fixed version. Patched images therefore **reduce** vulnerabilities on a best-effort basis and are not guaranteed to be free of all fixable CVEs; upgrading to a release that fixes the issue at its source remains the complete fix.
+
 ## Trust tier
 
 Patched images are a **complementary, best-effort security refresh** — not a replacement for canonical releases:
