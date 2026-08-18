@@ -43,6 +43,12 @@
   },
 
   packageRules: [
+    // ---- Ecosystem labels ----
+    { matchManagers: ["npm"], addLabels: ["javascript"] },
+    { matchManagers: ["dockerfile"], addLabels: ["docker"] },
+    { matchManagers: ["gomod"], addLabels: ["go"] },
+    { matchManagers: ["github-actions"], addLabels: ["github_actions"] },
+
     // ---- Routine updates (default branch in practice) ----
     {
       // gomod routine updates are patch-only: disable minor + major. This applies to every processed

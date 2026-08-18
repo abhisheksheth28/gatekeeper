@@ -13,11 +13,6 @@ on:
         type: choice
         options: [debug, info]
         default: debug
-      config:
-        description: "forktest = full parity harness; apptest = one-PR GitHub App / CI-trigger proof"
-        type: choice
-        options: [forktest, apptest]
-        default: forktest
 
 permissions: read-all
 
@@ -52,9 +47,8 @@ jobs:
 
       # Narrow the processed base branches to the maintained n/n-1 release lines at runtime,
       # so the config's release-branch policy stays generic (no per-release churn).
-      # Resolve from the release branches themselves. (apptest pins its own single branch.)
+      # Resolve from the release branches themselves.
       - name: Resolve maintained release branches
-        if: inputs.config == 'forktest'
         run: |
           set -euo pipefail
           maintained=$(
@@ -87,7 +81,7 @@ jobs:
       - name: Run Renovate
         uses: renovatebot/github-action@316d7cd859606d6039a2182b7d69199e9b036835 # v46.2.1
         with:
-          configurationFile: .github/renovate.${{ inputs.config }}.json5
+          configurationFile: .github/renovate.forktest.json5
           token: ${{ steps.app-token.outputs.token }}
         env:
           RENOVATE_REPOSITORIES: ${{ github.repository }}
