@@ -27,8 +27,8 @@
   // PRs auto-open. For a gated rollout, add `dependencyDashboardApproval: true`, approve from the
   // dashboard, then remove it.
 
-  // TODO(reviewers): assign before enabling upstream, e.g. reviewersFromCodeOwners: true
-  // or reviewers: ["team:gatekeeper-maintainers"].
+  // Route every PR to the maintainers team.
+  reviewers: ["team:gatekeeper-maintainers"],
 
   // Default branch + maintained release lines. The workflow narrows the release branches actually
   // processed to n/n-1 at runtime via RENOVATE_BASE_BRANCH_PATTERNS, so this stays a generic regex.
