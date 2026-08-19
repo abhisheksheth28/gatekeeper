@@ -110,7 +110,7 @@ All published architectures `linux/amd64`, `linux/arm64`, and `linux/arm/v7` are
 3. The result is **re-scanned** to confirm the vulnerability count went down; a patch that does not reduce vulnerabilities is discarded and never published.
 4. The patched image is **re-wrapped** so it carries the same [SBOM and SLSA provenance attestations](#build-attestations) as canonical images.
 
-Because the binaries are recompiled, patched images differ bit-for-bit from the originals (build timestamps, toolchain version, and so on), so their digests will not match the canonical `vX.Y.Z` image. This is expected.
+Because the binaries are recompiled, patched images differ from the originals (build timestamps, toolchain version, and so on), so their digests will not match the canonical `vX.Y.Z` image. This is expected.
 
 ### Best-effort library patching
 
