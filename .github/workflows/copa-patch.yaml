@@ -5,13 +5,13 @@ name: copa-patch
 # It scans published release images for fixable Go-library CVEs, rebuilds/patches them with
 # Copa, re-scans to confirm the fix, re-wraps them with BuildKit SBOM + SLSA provenance
 # attestations, and publishes immutable `vX.Y.Z-R` + floating `vX.Y.Z-patched` multi-arch
-# tags. Canonical release tags (`vX.Y.Z`, no suffix) are never touched.
+# tags. Canonical release tags are never touched.
 #
 # Modes (input `target`; the weekly schedule always runs `canonical`):
 #   - dry-run   (default for manual runs): scan/patch only, write a local OCI layout, push nothing.
-#   - staging  : push patched (un-attested) images to a non-canonical namespace.
+#   - staging  : push patched (unattested) images to the owner's copa-staging namespace.
 #   - canonical: re-wrap WITH attestations and publish to openpolicyagent/* (Docker Hub) +
-#                ghcr.io/open-policy-agent/* (GHCR). Only ever runs on the canonical repo.
+#                ghcr.io/open-policy-agent/* (GHCR).
 
 on:
   # Weekly canonical run — gated OFF for the initial merge.
@@ -30,16 +30,14 @@ on:
         options: [dry-run, staging, canonical]
         default: dry-run
       staging_registry:
-        description: "Namespace for `staging` mode and the canonical pre-attest intermediate. Blank = ghcr.io/<owner>/copa-staging."
+        description: "Namespace for `staging` mode and the canonical intermediate. Blank = ghcr.io/<owner>/copa-staging."
         required: false
         type: string
 
-# Least privilege by default; only the patch job elevates to packages:write (and it pushes
-# only when target != dry-run). Docker Hub uses username/token secrets, not a GITHUB scope.
 permissions: read-all
 
 # Serialize every run on a ref (weekly schedule + any manual dispatch) so two runs can't race
-# on the same vX.Y.Z-N revision number or -patched promotion. Queue rather than cancel.
+# on the same vX.Y.Z-N revision number or -patched promotion.
 concurrency:
   group: copa-patch-${{ github.ref }}
   cancel-in-progress: false
@@ -48,7 +46,7 @@ env:
   TRIVY_VERSION: "0.69.3"
   COPA_VERSION: "0.14.2"
   CRANE_VERSION: "0.21.7"
-  # Canonical registries. GHCR is also the source registry for the release images to patch.
+  # GHCR is also the source registry for the release images to patch.
   SOURCE_REGISTRY: "ghcr.io/open-policy-agent"
   DOCKERHUB_NAMESPACE: "openpolicyagent"
   # Arches to patch (all platforms gatekeeper/gator publish).
@@ -68,7 +66,7 @@ jobs:
           egress-policy: audit
 
       - name: Check out code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
@@ -88,7 +86,6 @@ jobs:
             fi
             latest="${stable[-1]}"
             latest_minor="${latest%.*}" # vX.Y
-            # Previous minor = highest patch on a different minor line than latest.
             prev=$(printf '%s\n' "${stable[@]}" | grep -v "^${latest_minor}\." | sort -V | tail -1 || true)
             if [[ -n "${prev}" ]]; then
               matrix=$(jq -cn --arg a "${latest}" --arg b "${prev}" '[$a,$b]')
@@ -107,14 +104,13 @@ jobs:
     timeout-minutes: 180
     permissions:
       contents: read
-      packages: write # push to GHCR (staging intermediate and/or canonical); only when target != dry-run
+      packages: write # push to GHCR only when target != dry-run
     strategy:
       fail-fast: false
       matrix:
         image: [gatekeeper, gator]
         release: ${{ fromJson(needs.resolve-releases.outputs.releases) }}
-    # matrix-derived values used across steps; hoisted here (still injection-safe) so steps
-    # don't each re-declare them.
+    # Matrix values reused across steps.
     env:
       IMAGE: ${{ matrix.image }}
       RELEASE: ${{ matrix.release }}
@@ -137,12 +133,10 @@ jobs:
           # inputs are empty on the schedule event => default to canonical there.
           mode="${INPUT_TARGET:-canonical}"
           case "${mode}" in dry-run|staging|canonical) ;; *) echo "::error::invalid target '${mode}'"; exit 1;; esac
-          # Safety model: this workflow only READS upstream release images (public pulls) and never
-          # writes to upstream. `dry-run` pushes nothing; `staging` pushes only to the fork owner's
-          # own namespace (ghcr.io/<owner>/copa-staging/*). `canonical` is the only mode that writes
-          # to the official repos, and it is locked to the upstream repo here — so on a fork it
-          # refuses. (A fork's GITHUB_TOKEN can't write upstream packages, and Docker Hub secrets
-          # don't exist on forks, so there is no credential path to upstream regardless.)
+          # Safety: `dry-run` pushes nothing; `staging` pushes only to the owner's own
+          # ghcr.io/<owner>/copa-staging/* namespace; `canonical` (the only mode that writes to the
+          # official repos) is locked to the upstream repo below. Forks have no credential path
+          # upstream regardless — no upstream package scope, no Docker Hub secrets.
           if [[ "${mode}" == "canonical" && "${REPO}" != "open-policy-agent/gatekeeper" ]]; then
             echo "::error::target=canonical is only allowed on open-policy-agent/gatekeeper (here: ${REPO})"; exit 1
           fi
@@ -189,8 +183,11 @@ jobs:
           set -euo pipefail
           dir="$(mktemp -d)"
           pushd "${dir}"
-          wget -q "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
-          tar zxf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          base="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
+          tarball="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          wget -q "${base}/${tarball}" "${base}/trivy_${TRIVY_VERSION}_checksums.txt"
+          grep " ${tarball}\$" "trivy_${TRIVY_VERSION}_checksums.txt" | sha256sum -c -
+          tar zxf "${tarball}"
           echo "${dir}" >> "$GITHUB_PATH"
           popd
 
@@ -202,7 +199,6 @@ jobs:
           base="https://github.com/project-copacetic/copacetic/releases/download/v${COPA_VERSION}"
           tarball="copa_${COPA_VERSION}_linux_amd64.tar.gz"
           wget -q "${base}/${tarball}" "${base}/copacetic_checksums.txt"
-          # Verify the release asset against the published checksum.
           grep " ${tarball}\$" copacetic_checksums.txt | sha256sum -c -
           tar zxf "${tarball}"
           echo "${dir}" >> "$GITHUB_PATH"
@@ -226,7 +222,7 @@ jobs:
           trivy image --download-db-only \
             --db-repository=ghcr.io/aquasecurity/trivy-db,public.ecr.aws/aquasecurity/trivy-db,docker.io/aquasec/trivy-db
 
-      # Record the canonical release-tag digests up front, to confirm afterwards that the run
+      # Record the canonical release tag digests up front, to confirm afterwards that the run
       # never mutated a canonical `vX.Y.Z` tag (only `-R`/`-patched` are added).
       - name: Capture canonical base digests
         id: base
@@ -242,7 +238,7 @@ jobs:
           echo "Canonical base digests — ghcr:${ghcr} dockerhub:${dh}"
 
       # Scan the canonical source per arch. The reports Copa consumes live in copa-reports/
-      # (one per platform => Copa patches exactly those arches); other scans use separate dirs.
+      # (one per platform => Copa patches exactly those arches).
       - name: Scan source for fixable library CVEs
         id: scan
         env:
@@ -278,7 +274,7 @@ jobs:
           set -euo pipefail
           if [[ "${BEFORE}" -eq 0 ]]; then
             echo "has_fixes=false" >> "$GITHUB_OUTPUT"
-            echo "Source has no fixable library CVEs — nothing to patch." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "Source has no fixable library CVEs, nothing to patch." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           # Idempotency only applies when publishing and a prior -patched already exists.
@@ -317,11 +313,8 @@ jobs:
           echo "rev=${rev}" >> "$GITHUB_OUTPUT"
           echo "Revision: ${RELEASE}-${rev}"
 
-      # Report-driven multi-arch patch. Copa patches every arch that has a report in copa-reports/
-      # (all of amd64/arm64/arm/v7) and passes any other arch in the source index through
-      # untouched. In dry-run it writes a local OCI layout; otherwise it pushes to the
-      # intermediate repo (which is the final image for `staging`, or the pre-attest input
-      # for the `canonical` re-wrap).
+      # Report-driven multi-arch patch: Copa patches every arch with a report in copa-reports/
+      # and passes any other source arch through untouched.
       - name: Copa patch
         id: patch
         if: steps.gate.outputs.has_fixes == 'true'
@@ -374,9 +367,7 @@ jobs:
           fi
           echo "All target arches present in the patched index."
 
-      # Verify the patch actually reduced CVEs on every patched arch; fail the cell otherwise.
-      # This runs BEFORE anything is promoted or published to canonical, so a bad patch never
-      # reaches users.
+      # Verify the patch actually reduced the total fixable CVE count across arches.
       - name: Verify patched image (re-scan)
         if: steps.gate.outputs.has_fixes == 'true'
         env:
@@ -389,8 +380,8 @@ jobs:
           set -euo pipefail
           total=0
           stdlib_total=0
-          residual_md=""   # accumulates the per-arch list of packages left below their fixed version
-          # Build the summary table.
+          residual_md=""
+          unimproved=""
           {
             echo "### ${IMAGE}:${RELEASE} → ${RELEASE}-${REV} (${MODE})"
             echo ""
@@ -413,6 +404,10 @@ jobs:
             arch_before_stdlib=$(jq '[.Results[]?.Vulnerabilities[]? | select(.PkgName == "stdlib")] | length' "copa-reports/${a}.json" 2>/dev/null || echo 0)
             total=$(( total + arch_total ))
             stdlib_total=$(( stdlib_total + arch_stdlib ))
+            # Flag an arch that had fixable CVEs but didn't improve — likely a Copa failure on it.
+            if [[ "${arch_before}" -gt 0 && "${arch_total}" -ge "${arch_before}" ]]; then
+              unimproved+=" ${p}(${arch_before}->${arch_total})"
+            fi
             echo "  ${a}: fixable after=${arch_total} (stdlib=${arch_stdlib})"
             echo "| ${p} | ${arch_before} → ${arch_total} | ${arch_before_stdlib} → ${arch_stdlib} |" >> "$GITHUB_STEP_SUMMARY"
             # Library packages Copa left below their fixed version on this arch (stdlib is reported separately).
@@ -426,7 +421,7 @@ jobs:
           done
           echo "CVE totals across ${PATCH_ARCHES}: before=${BEFORE} after=${total} | stdlib before=${BEFORE_STDLIB} after=${stdlib_total}"
           echo "| **all** | **${BEFORE} → ${total}** | **${BEFORE_STDLIB} → ${stdlib_total}** |" >> "$GITHUB_STEP_SUMMARY"
-          # Surface library CVEs Copa could not fix. best effort
+          # Surface fixable library CVEs Copa couldn't reach.
           library_total=$(( total - stdlib_total ))
           if [[ -n "${residual_md}" ]]; then
             {
@@ -438,6 +433,10 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             echo "::warning::${library_total} fixable library CVE(s) remain after patching."
           fi
+          if [[ -n "${unimproved}" ]]; then
+            echo "::warning::arch(es) not improved despite fixable CVEs:${unimproved} — likely a Copa failure on those arches"
+            echo "> **Not improved despite fixable CVEs:**${unimproved}" >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [[ "${total}" -ge "${BEFORE}" ]]; then
             echo "::error::patch did not reduce fixable CVEs (before=${BEFORE}, after=${total})"
             exit 1
@@ -447,13 +446,6 @@ jobs:
             echo "::warning::${stdlib_total} Go stdlib CVE(s) remain after toolchain patch (may require a newer Go minor)"
           fi
 
-      # CANONICAL ONLY: re-attach the project's canonical trust by re-wrapping the verified
-      # patched image with the same attestation flags the release build uses (Makefile
-      # `_ATTESTATIONS`: --attest type=sbom --attest type=provenance,mode=max) and publishing to
-      # both canonical registries. `FROM <patched>` adds no filesystem layers, so this only
-      # attaches attestations — it does not rebuild. The SBOM is regenerated against the patched
-      # filesystem, so it reflects the patched module versions; the provenance documents this
-      # re-wrap step (built FROM the patched image), not the original from-source release build.
       - name: Re-wrap with attestations and publish to canonical
         id: rewrap
         if: steps.gate.outputs.has_fixes == 'true' && steps.cfg.outputs.mode == 'canonical'
@@ -464,7 +456,6 @@ jobs:
           set -euo pipefail
           ghcr_ref="${SOURCE_REGISTRY}/${IMAGE}:${RELEASE}-${REV}"
           dh_ref="${DOCKERHUB_NAMESPACE}/${IMAGE}:${RELEASE}-${REV}"
-          # Preserve every arch present in the patched index (amd64, arm64, arm/v7 are all patched).
           platforms=$(docker buildx imagetools inspect "${INTERMEDIATE_REF}" --raw \
             | jq -r '[ .manifests[]
                        | select(.platform != null and .platform.os != null and .platform.architecture != "unknown")
@@ -487,8 +478,6 @@ jobs:
             echo "dh_ref=${dh_ref}"
           } >> "$GITHUB_OUTPUT"
 
-      # CANONICAL ONLY: refuse to proceed unless the published index actually carries
-      # attestation manifests (no unattested image reaches openpolicyagent/*).
       - name: Verify attestations present
         if: steps.gate.outputs.has_fixes == 'true' && steps.cfg.outputs.mode == 'canonical'
         env:
@@ -500,7 +489,7 @@ jobs:
           echo "Attestation manifests on ${GHCR_REF}: ${n}"
           if [[ "${n}" -lt 1 ]]; then echo "::error::no attestations on ${GHCR_REF}"; exit 1; fi
 
-      # CANONICAL ONLY: prove the run never mutated a canonical release tag.
+      # prove the run never mutated a canonical release tag.
       - name: Verify canonical release tags untouched
         if: steps.gate.outputs.has_fixes == 'true' && steps.cfg.outputs.mode == 'canonical'
         env:
@@ -515,8 +504,7 @@ jobs:
           fi
           echo "Canonical release tags unchanged (ghcr ${now_ghcr}, dockerhub ${now_dh})."
 
-      # Move the floating -patched tag onto the just-verified immutable revision — on the
-      # staging repo for `staging`, or on both canonical registries for `canonical`.
+      # Move the floating -patched tag onto the just verified immutable revision.
       - name: Promote floating -patched tag
         if: steps.gate.outputs.has_fixes == 'true' && steps.cfg.outputs.mode != 'dry-run'
         env:
@@ -551,10 +539,6 @@ jobs:
           else
             ref="${INTERMEDIATE_REPO}:${RELEASE}-${REV}"
           fi
-          # Distroless images have no shell, so exercise the entrypoint with --help, once per
-          # patched arch (non-amd64 runs under QEMU). gator (cobra) exits 0; manager (Go flag
-          # pkg) exits 2 on usage — both prove the binary executes on that arch. Any other code
-          # (exec-format error, crash) fails the cell.
           for p in $PATCH_ARCHES; do
             set +e
             docker run --rm --pull always --platform "$p" "${ref}" --help >/dev/null 2>&1
