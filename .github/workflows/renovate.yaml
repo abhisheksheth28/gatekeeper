@@ -1,7 +1,6 @@
 name: renovate
 
-# Source-side dependency and security automation. Runs weekly (Monday 08:00 UTC) and can also be
-# dispatched manually. Self-hosted Renovate Action.
+# Runs Renovate weekly (Monday 08:00 UTC) and on manual dispatch; self-hosted via the Renovate Action.
 
 on:
   schedule:
@@ -27,7 +26,6 @@ concurrency:
 jobs:
   renovate:
     name: Renovate
-    # Canonical repo only. Forks use renovate-forktest.yaml; this also blocks a manual dispatch on a fork.
     if: github.repository == 'open-policy-agent/gatekeeper'
     runs-on: ubuntu-24.04
     timeout-minutes: 30

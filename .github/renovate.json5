@@ -1,11 +1,8 @@
 {
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
 
-  // Source-side dependency and security automation: routine updates on the default branch and
-  // security-only fixes on the maintained release branches.
-  //
-  // Not extending config:recommended on purpose — its ignorePaths drops **/test/**, which would
-  // stop updating the Dockerfiles under /test/*.
+  // Routine dependency updates on the default branch; security-only fixes on the maintained
+  // release branches.
 
   // Confine routine PRs to Monday morning (UTC). Security fixes ignore `schedule` and always open.
   schedule: ["* 6-11 * * 1"],
@@ -18,16 +15,12 @@
   semanticCommits: "enabled",
   semanticCommitType: "chore",       // commit as chore(deps): — parsed by cliff.toml
   minimumReleaseAge: "3 days",       // cooldown to avoid just-published versions
-  minimumReleaseAgeBehaviour: "timestamp-optional", // don't stall versions that lack a release timestamp (else lowest security fixes get held)
+  minimumReleaseAgeBehaviour: "timestamp-optional", // don't stall versions that lack a release timestamp
   postUpdateOptions: ["gomodTidy"],  // run `go mod tidy` after gomod changes
   dependencyDashboard: true,         // tracking issue for pending updates
 
   labels: ["dependencies"],
 
-  // PRs auto-open. For a gated rollout, add `dependencyDashboardApproval: true`, approve from the
-  // dashboard, then remove it.
-
-  // Route every PR to the maintainers team.
   reviewers: ["team:gatekeeper-maintainers"],
 
   // Default branch + maintained release lines. The workflow narrows the release branches actually
@@ -49,11 +42,10 @@
     { matchManagers: ["gomod"], addLabels: ["go"] },
     { matchManagers: ["github-actions"], addLabels: ["github_actions"] },
 
-    // ---- Routine updates (default branch in practice) ----
+    // ---- Routine updates ----
     {
-      // gomod routine updates are patch-only: disable minor + major. This applies to every processed
-      // branch, but release branches disable all routine updates anyway, so it only constrains the
-      // default branch. Security fixes are forced through separately (vulnerabilityAlerts).
+      // Patch only for gomod: no routine minor/major. Release branches disable all routine updates
+      // anyway, so this only bites the default branch; security bumps still flow via vulnerabilityAlerts.
       matchManagers: ["gomod"],
       matchUpdateTypes: ["minor", "major"],
       enabled: false,
@@ -72,13 +64,13 @@
       separateMajorMinor: false,
     },
 
-    // ---- Maintained release branches: security-only, backport-labelled ----
+    // ---- Maintained release branches: security-only, backport labelled ----
     {
       matchBaseBranches: ["/^release-3\\.\\d+$/"],
       addLabels: ["backport"],
     },
     {
-      // Allow security fixes for indirect Go deps too (e.g. golang.org/x/text).
+      // Allow security fixes for indirect Go deps.
       matchBaseBranches: ["/^release-3\\.\\d+$/"],
       matchManagers: ["gomod"],
       matchDepTypes: ["indirect"],
