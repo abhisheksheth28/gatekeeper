@@ -204,14 +204,14 @@ all: lint test manager
 native-test: envtest
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(KUBERNETES_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 	GO111MODULE=on \
-	go test . ./pkg/... ./apis/... ./cmd/gator/... -coverprofile cover.out
+	go test . ./pkg/... ./apis/... ./cmd/gator/... ./cmd/build/helmify/... -coverprofile cover.out
 
 # Run tests with race detector
 .PHONY: native-race-test
 native-race-test: envtest
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(KUBERNETES_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 	GO111MODULE=on \
-	go test . ./pkg/... ./apis/... ./cmd/gator/... -race -timeout 20m
+	go test . ./pkg/... ./apis/... ./cmd/gator/... ./cmd/build/helmify/... -race -timeout 20m
 
 # Run benchmarks only (no unit tests)
 .PHONY: native-bench-test
@@ -424,7 +424,7 @@ manifests: __controller-gen
 		/gatekeeper/config/default -o /gatekeeper/manifest_staging/deploy/gatekeeper.yaml
 	docker run --rm -v $(shell pwd):/gatekeeper \
 		registry.k8s.io/kustomize/kustomize:v${KUSTOMIZE_VERSION} build \
-		--load-restrictor LoadRestrictionsNone /gatekeeper/cmd/build/helmify | go run cmd/build/helmify/*.go
+		--load-restrictor LoadRestrictionsNone /gatekeeper/cmd/build/helmify | go run ./cmd/build/helmify
 
 # lint runs a dockerized golangci-lint, and should give consistent results
 # across systems.

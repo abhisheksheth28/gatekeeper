@@ -59,12 +59,22 @@ spec:
         image: {{ .Values.image.repository }}
         {{- end }}
         args:
+        {{- if not .Values.audit.disableAuditOperation }}
+        - --operation=audit
+        {{- end }}
+        {{- if not .Values.audit.disableStatusOperation }}
+        - --operation=status
+        {{- end }}
+        {{ if not .Values.disableMutation}}- --operation=mutation-status{{- end }}
+        {{- if not .Values.audit.disableGenerateOperation }}
+        - --operation=generate
+        {{- end }}
+        - --logtostderr
+        - --disable-cert-rotation={{ or .Values.audit.disableCertRotation .Values.externalCertInjection.enabled }}
         - --audit-interval={{ .Values.auditInterval }}
-        - --log-level={{ (.Values.audit.logLevel | empty | not) | ternary .Values.audit.logLevel
-          .Values.logLevel }}
+        - --log-level={{ (.Values.audit.logLevel | empty | not) | ternary .Values.audit.logLevel .Values.logLevel }}
         - --constraint-violations-limit={{ .Values.constraintViolationsLimit }}
-        - --validating-webhook-configuration-name={{ .Values.validatingWebhookName
-          }}
+        - --validating-webhook-configuration-name={{ .Values.validatingWebhookName }}
         - --mutating-webhook-configuration-name={{ .Values.mutatingWebhookName }}
         - --audit-from-cache={{ .Values.auditFromCache }}
         {{ if hasKey .Values "auditChunkSize" }}- --audit-chunk-size={{ .Values.auditChunkSize }}{{- end }}
@@ -73,18 +83,7 @@ spec:
         {{ if hasKey .Values "emitAdmissionAuditAnnotations" }}- --emit-admission-audit-annotations={{ .Values.emitAdmissionAuditAnnotations }}{{- end }}
         {{ if hasKey .Values "admissionAuditAnnotationsIncludeSuccess" }}- --admission-audit-annotations-include-success={{ .Values.admissionAuditAnnotationsIncludeSuccess }}{{- end }}
         {{ if hasKey .Values "logStatsAudit" }}- --log-stats-audit={{ .Values.logStatsAudit }}{{- end }}
-        - --audit-events-involved-namespace={{ .Values.auditEventsInvolvedNamespace
-          }}
-        
-        {{- if not .Values.audit.disableGenerateOperation }}
-        - --operation=generate
-        {{- end }}
-        {{- if not .Values.audit.disableAuditOperation }}
-        - --operation=audit
-        {{- end }}
-        {{- if not .Values.audit.disableStatusOperation }}
-        - --operation=status
-        {{- end }}
+        - --audit-events-involved-namespace={{ .Values.auditEventsInvolvedNamespace }}
         {{ if hasKey .Values "enableViolationExport" }}
         - --enable-violation-export={{ .Values.enableViolationExport }}
         {{- end }}
@@ -95,13 +94,10 @@ spec:
         - --audit-channel={{ .Values.audit.channel }}
         {{- end }}
         {{ if hasKey .Values "syncVAPEnforcementScope" }}- --sync-vap-enforcement-scope={{ .Values.syncVAPEnforcementScope }}{{- end }}
-        {{ if not .Values.disableMutation}}- --operation=mutation-status{{- end }}
-        - --logtostderr
         - --health-addr=:{{ .Values.audit.healthPort }}
         - --prometheus-port={{ .Values.audit.metricsPort }}
         - --enable-external-data={{ .Values.enableExternalData }}
-        - --enable-generator-resource-expansion={{ .Values.enableGeneratorResourceExpansion
-          }}
+        - --enable-generator-resource-expansion={{ .Values.enableGeneratorResourceExpansion }}
         
         {{- range .Values.metricsBackends}}
         - --metrics-backend={{ . }}
@@ -123,10 +119,7 @@ spec:
         {{- if .Values.audit.logFile}}
         - --log-file={{ .Values.audit.logFile }}
         {{- end }}
-        - --disable-cert-rotation={{ or .Values.audit.disableCertRotation .Values.externalCertInjection.enabled
-          }}
-        - --external-data-provider-response-cache-ttl={{ .Values.externaldataProviderResponseCacheTTL
-          }}
+        - --external-data-provider-response-cache-ttl={{ .Values.externaldataProviderResponseCacheTTL }}
         - --enable-k8s-native-validation={{ .Values.enableK8sNativeValidation }}
 
         {{- if hasKey .Values "defaultK8sNativeValidationFailurePolicy"}}

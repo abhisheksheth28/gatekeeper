@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -82,16 +84,23 @@ func (ks *kindSet) Add(obj string) error {
 	return nil
 }
 
-func (ks *kindSet) Write() error {
-	for kind, objs := range ks.byKind {
+func (ks *kindSet) Write(outputDir string) error {
+	kinds := make([]string, 0, len(ks.byKind))
+	for kind := range ks.byKind {
+		kinds = append(kinds, kind)
+	}
+	sort.Strings(kinds)
+
+	for _, kind := range kinds {
+		objs := ks.byKind[kind]
 		subPath := "templates"
 		nameExtractor := extractName
 		if kind == "CustomResourceDefinition" {
 			nameExtractor = extractCRDKind
 			subPath = "crds"
-			parentDir := path.Join(*outputDir, subPath)
+			parentDir := path.Join(outputDir, subPath)
 			fmt.Printf("Making %s\n", parentDir)
-			if err := os.Mkdir(parentDir, 0o750); err != nil {
+			if err := os.MkdirAll(parentDir, 0o750); err != nil {
 				return err
 			}
 		}
@@ -122,7 +131,7 @@ func (ks *kindSet) Write() error {
 				fileName = fmt.Sprintf("gatekeeper-mutating-webhook-configuration-%s.yaml", strings.ToLower(kind))
 			}
 
-			destFile := path.Join(*outputDir, subPath, fileName)
+			destFile := path.Join(outputDir, subPath, fileName)
 
 			if name == "gatekeeper-webhook-server-cert" && kind == "Secret" {
 				obj = "{{- if not .Values.externalCertInjection.enabled }}\n" + obj + "{{- end }}\n"
@@ -195,7 +204,7 @@ func doReplacements(obj string) string {
 	return obj
 }
 
-func copyStaticFiles(root string, subdirs ...string) error {
+func copyStaticFiles(outputDir, root string, subdirs ...string) error {
 	p := path.Join(append([]string{root}, subdirs...)...)
 	files, err := os.ReadDir(p)
 	if err != nil {
@@ -204,13 +213,13 @@ func copyStaticFiles(root string, subdirs ...string) error {
 	for _, f := range files {
 		newSubDirs := append([]string{}, subdirs...)
 		newSubDirs = append(newSubDirs, f.Name())
-		destination := path.Join(append([]string{*outputDir}, newSubDirs...)...)
+		destination := path.Join(append([]string{outputDir}, newSubDirs...)...)
 		if f.IsDir() {
 			fmt.Printf("Making %s\n", destination)
-			if err := os.Mkdir(destination, 0o750); err != nil {
+			if err := os.MkdirAll(destination, 0o750); err != nil {
 				return err
 			}
-			if err := copyStaticFiles(root, newSubDirs...); err != nil {
+			if err := copyStaticFiles(outputDir, root, newSubDirs...); err != nil {
 				return err
 			}
 		} else {
@@ -227,36 +236,86 @@ func copyStaticFiles(root string, subdirs ...string) error {
 	return nil
 }
 
-func main() {
-	flag.Parse()
-	scanner := bufio.NewScanner(os.Stdin)
-	kinds := kindSet{byKind: make(map[string][]string)}
-	b := strings.Builder{}
-	notate := func() {
-		obj := doReplacements(b.String())
-		b.Reset()
-		if err := kinds.Add(obj); err != nil {
-			log.Fatalf("Error adding object: %s, %s", err, b.String())
+func prepareOutputDirectory(destination string) error {
+	entries, err := os.ReadDir(destination)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if err := os.MkdirAll(destination, 0o750); err != nil {
+				return fmt.Errorf("create chart output directory: %w", err)
+			}
+			return nil
 		}
+		return fmt.Errorf("inspect chart output directory: %w", err)
+	}
+	if len(entries) != 0 {
+		return fmt.Errorf("chart output directory %q is not empty; remove it or choose an empty directory", destination)
+	}
+	return nil
+}
+
+func run(input io.Reader, destination string) error {
+	if err := prepareOutputDirectory(destination); err != nil {
+		return err
+	}
+
+	scanner := bufio.NewScanner(input)
+	kinds := kindSet{byKind: make(map[string][]string)}
+	transformedDeployments := make(map[string]int)
+	b := strings.Builder{}
+	notate := func() error {
+		source := b.String()
+		b.Reset()
+		obj, transformedDeployment, err := transformDeploymentArguments(source)
+		if err != nil {
+			return fmt.Errorf("transform object arguments: %w", err)
+		}
+		if transformedDeployment != "" {
+			transformedDeployments[transformedDeployment]++
+		}
+		obj = doReplacements(obj)
+		if err := kinds.Add(obj); err != nil {
+			return fmt.Errorf("add object: %w", err)
+		}
+		return nil
 	}
 
 	for scanner.Scan() {
 		if strings.HasPrefix(scanner.Text(), "---") {
 			if b.Len() > 0 {
-				notate()
+				if err := notate(); err != nil {
+					return err
+				}
 			}
 		} else {
 			b.WriteString(scanner.Text())
 			b.WriteString("\n")
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("read manifests: %w", err)
+	}
 	if b.Len() > 0 {
-		notate()
+		if err := notate(); err != nil {
+			return err
+		}
 	}
-	if err := copyStaticFiles("cmd/build/helmify/static"); err != nil {
-		log.Fatal(err)
+	for _, deployment := range []string{controllerManagerDeployment, auditDeployment} {
+		if transformedDeployments[deployment] != 1 {
+			return fmt.Errorf("expected to transform deployment %q exactly once, found %d", deployment, transformedDeployments[deployment])
+		}
 	}
-	if err := kinds.Write(); err != nil {
+	if err := copyStaticFiles(destination, "cmd/build/helmify/static"); err != nil {
+		return fmt.Errorf("copy static chart files: %w", err)
+	}
+	if err := kinds.Write(destination); err != nil {
+		return fmt.Errorf("write generated chart files: %w", err)
+	}
+	return nil
+}
+
+func main() {
+	flag.Parse()
+	if err := run(os.Stdin, *outputDir); err != nil {
 		log.Fatal(err)
 	}
 }

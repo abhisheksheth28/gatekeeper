@@ -128,11 +128,11 @@ var replacements = map[string]string{
 
 	"- HELMSUBST_MUTATION_STATUS_ENABLED_ARG": `{{ if not .Values.disableMutation}}- --operation=mutation-status{{- end }}`,
 
-	"- HELMSUBST_CONTROLLER_MANAGER_OPERATIONS": `
-        {{- if not .Values.controllerManager.disableWebhookOperation }}
+	"- HELMSUBST_CONTROLLER_MANAGER_WEBHOOK_OPERATION": `{{- if not .Values.controllerManager.disableWebhookOperation }}
         - --operation=webhook
-        {{- end }}
-        {{- if not .Values.controllerManager.disableGenerateOperation }}
+        {{- end }}`,
+
+	"- HELMSUBST_CONTROLLER_MANAGER_GENERATE_OPERATION": `{{- if not .Values.controllerManager.disableGenerateOperation }}
         - --operation=generate
         {{- end }}`,
 
@@ -141,14 +141,15 @@ var replacements = map[string]string{
         - --audit-channel={{ .Values.audit.channel }}
   {{- end }}{{- end }}`,
 
-	"- HELMSUBST_AUDIT_OPERATIONS": `
-        {{- if not .Values.audit.disableGenerateOperation }}
+	"- HELMSUBST_AUDIT_GENERATE_OPERATION": `{{- if not .Values.audit.disableGenerateOperation }}
         - --operation=generate
-        {{- end }}
-        {{- if not .Values.audit.disableAuditOperation }}
+        {{- end }}`,
+
+	"- HELMSUBST_AUDIT_OPERATION": `{{- if not .Values.audit.disableAuditOperation }}
         - --operation=audit
-        {{- end }}
-        {{- if not .Values.audit.disableStatusOperation }}
+        {{- end }}`,
+
+	"- HELMSUBST_STATUS_OPERATION": `{{- if not .Values.audit.disableStatusOperation }}
         - --operation=status
         {{- end }}`,
 
@@ -341,8 +342,7 @@ var replacements = map[string]string{
       {{- end }}
   {{- end }}`,
 
-	"- HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_DISABLED_BUILTIN": `
-        {{- range .Values.disabledBuiltins}}
+	"- HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_DISABLED_BUILTIN": `{{- range .Values.disabledBuiltins}}
         - --disable-opa-builtin={{ . }}
         {{- end }}`,
 	"- HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_EXEMPT_NAMESPACES": `

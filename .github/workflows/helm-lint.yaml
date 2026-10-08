@@ -2,11 +2,15 @@ name: check-helm-lint
 on:
   push:
     paths:
-      - "cmd/build/helmify/static/**"
+      - ".github/workflows/helm-lint.yaml"
+      - "cmd/build/helmify/**"
+      - "config/manager/manager.yaml"
       - "manifest_staging/**"
   pull_request:
     paths:
-      - "cmd/build/helmify/static/**"
+      - ".github/workflows/helm-lint.yaml"
+      - "cmd/build/helmify/**"
+      - "config/manager/manager.yaml"
       - "manifest_staging/**"
 
 permissions: read-all
@@ -26,8 +30,19 @@ jobs:
       with:
         version: "4.2.3"
       id: install
+
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: go.mod
+        check-latest: true
     
     - name: Lint Helm charts
       run: |
         helm lint manifest_staging/charts/gatekeeper/
         helm lint cmd/build/helmify/static/
+
+    - name: Check default source arguments
+      env:
+        GATEKEEPER_REQUIRE_HELM: "true"
+      run: go test ./cmd/build/helmify -run '^TestDefaultHelmArgumentsMatchSourceManifest$'

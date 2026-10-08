@@ -108,7 +108,131 @@ If you want to contribute to docs, Gatekeeper auto-generates versioned docs. If 
 
 ## Contributing to Helm Chart
 
-If you want to contribute to Helm chart, Gatekeeper auto-generates versioned Helm charts from static manifests. If you have any changes in [charts](https://github.com/open-policy-agent/gatekeeper/tree/master/charts) directory, they will get clobbered when we do a new release. The generator code lives under [cmd/build/helmify](https://github.com/open-policy-agent/gatekeeper/tree/master/cmd/build/helmify). To make modifications to this template, please edit `kustomization.yaml`, `kustomize-for-helm.yaml` and `replacements.go` under that directory and then run `make manifests` to generate changes in the [manifest_staging](https://github.com/open-policy-agent/gatekeeper/tree/master/manifest_staging) directory. You should push all the modified files to your PR. Once it's merged, the changes will be promoted to the root charts directory the next time a Gatekeeper release is cut.
+Gatekeeper generates its Helm chart from the source Kubernetes manifests. Do not edit files in
+the [charts](https://github.com/open-policy-agent/gatekeeper/tree/master/charts) directory directly.
+They are release artifacts and will be overwritten when a new release is created. Source changes
+belong under [config](https://github.com/open-policy-agent/gatekeeper/tree/master/config) and
+[cmd/build/helmify](https://github.com/open-policy-agent/gatekeeper/tree/master/cmd/build/helmify).
+Running `make manifests` writes the generated chart to
+[manifest_staging/charts/gatekeeper](https://github.com/open-policy-agent/gatekeeper/tree/master/manifest_staging/charts/gatekeeper).
+The target removes the staging directory before generation. Direct Helm generator invocations must
+likewise use a missing or empty output directory; generation rejects a non-empty destination to
+prevent stale chart files.
+Include all resulting source and generated-file changes in the pull request. The release process
+promotes the staged chart to the root `charts` directory.
+
+### Adding Source Arguments
+
+The controller-manager and audit argument lists in
+[`config/manager/manager.yaml`](https://github.com/open-policy-agent/gatekeeper/blob/master/config/manager/manager.yaml)
+are the source of truth for arguments shared by the static manifest and Helm chart. Do not add
+complete argument lists to `cmd/build/helmify/kustomize-for-helm.yaml`.
+
+Choose the workflow that matches the intended behavior:
+
+| Intended behavior | Source manifest | Helm generator | Follow-up |
+| --- | --- | --- | --- |
+| Same fixed argument in static and Helm installations | Add the argument to the appropriate Deployment in `config/manager/manager.yaml`. | No change. The chart inherits the argument automatically. | Add tests as needed and run `make manifests`. |
+| Source argument with a Helm-configurable value | Add the argument and its static default to `config/manager/manager.yaml`. | Add the public value and default to `cmd/build/helmify/static/values.yaml`, then add a `transformFlag` or `transformExact` entry to the appropriate workload in `cmd/build/helmify/args_config.go`. Add a `cmd/build/helmify/replacements.go` entry for every new `HELMSUBST` token. | Document the value in `cmd/build/helmify/static/README.md`, add tests for the supported values, and run `make manifests`. |
+| Argument intentionally available only in the static installation | Add the argument to the appropriate Deployment in `config/manager/manager.yaml`. | Add an `omitExact` entry to the appropriate workload in `cmd/build/helmify/args_config.go`. Use this only for an intentional compatibility difference. | Document why Helm omits the argument, add a test for the exception, and run `make manifests`. |
+| Argument available only through Helm | Do not add the argument to the source manifest. | Add any public value and default under `cmd/build/helmify/static`, then declare the argument in the workload's `helmOnly` list in `cmd/build/helmify/args_config.go`. Use `helmArgument` for one directly expressed argument or `helmTemplate` for a standalone marker. Add a `cmd/build/helmify/replacements.go` entry for every new `HELMSUBST` token. | Document the value, add tests for the supported values, and run `make manifests`. |
+
+Arguments that do not require Helm-specific behavior are inherited by the chart automatically. No
+change to the Helm generator is required for a fixed shared argument.
+
+Use the helper that matches how Helm owns the argument:
+
+| Helper | Use when |
+| --- | --- |
+| `transformFlag` | Helm replaces the value of an entire flag family, such as `--port=<value>`. |
+| `transformExact` | Only one complete argument has special behavior, such as `--operation=webhook`. |
+| `omitExact` | One exact source argument must exist but is intentionally omitted from the generated Helm workload. |
+| `helmArgument` | Helm always emits one argument whose `--flag` identity is directly available from the value. The value may contain an inline Go template. |
+| `helmTemplate` | Helm conditionally emits one or more arguments. Declare every identity it may emit. |
+
+Use `transformFlag` when Helm replaces the value of a flag, for example:
+
+```go
+transformFlag(
+    "new feature",
+    "--new-feature",
+    "--new-feature={{ .Values.newFeature }}",
+)
+```
+
+Use `transformExact` when only one complete argument has special meaning, such as a particular
+`--operation` value.
+
+Use `omitExact` only when preserving an intentional difference between static and Helm
+installations. It requires the exact source argument to remain present, but omits that argument
+from the generated Helm workload:
+
+```go
+omitExact(
+    "disabled OPA http.send builtin",
+    "--disable-opa-builtin={http.send}",
+)
+```
+
+Document the compatibility reason and add a test whenever introducing such an exception.
+
+If an argument must not be present in the static installation, add its value under
+`cmd/build/helmify/static`, declare it in the workload's `helmOnly` list in
+`cmd/build/helmify/args_config.go`, and document the value in
+`cmd/build/helmify/static/README.md`.
+
+Use `helmArgument` when the entry directly expresses one argument, including an argument with an
+inline Go template or embedded `HELMSUBST` token:
+
+```go
+helmArgument("--new-feature={{ .Values.newFeature }}")
+```
+
+Conditional or multi-argument templates use a standalone marker with `helmTemplate`. Declare every
+argument identity the replacement may emit:
+
+```go
+helmTemplate(
+    "HELMSUBST_NEW_FEATURE",
+    "--new-feature",
+)
+```
+
+Every new `HELMSUBST` token, whether embedded in an argument or used as a standalone marker, must
+have a corresponding entry in `cmd/build/helmify/replacements.go`.
+
+An identity containing `=` owns only that exact argument, so `--operation=generate` can coexist
+with other `--operation` values. An identity without `=` owns the entire flag family, so
+`--kubeconfig` conflicts with every `--kubeconfig=<value>` argument.
+
+The declared identities allow the generator to reject source arguments that would conflict
+with existing Helm controls. Do not bypass a collision by adding a broad overlap exception.
+Add an explicit transformation rule instead. Namespace exemption flags are the only intentional
+overlap between source and Helm arguments.
+
+### Validating Helm Chart Changes
+
+Run the following before submitting a change:
+
+```console
+make manifests
+make lint
+make native-test
+helm lint manifest_staging/charts/gatekeeper
+```
+
+Review the generated files under `manifest_staging`. For new or changed Helm values, also render
+the chart with representative enabled and disabled values:
+
+```console
+helm template gatekeeper manifest_staging/charts/gatekeeper \
+  --namespace gatekeeper-system \
+  --set newFeature=true
+```
+
+Generation fails when a source argument conflicts with a Helm-controlled argument, an expected
+Deployment cannot be transformed, or a required transformation no longer matches. Resolve the
+underlying ownership decision rather than copying the full argument list into the Helm overlay.
 
 ## Contributing to Code
 
