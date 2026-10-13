@@ -4,13 +4,13 @@ on:
     paths:
       - ".github/workflows/helm-lint.yaml"
       - "cmd/build/helmify/**"
-      - "config/manager/manager.yaml"
+      - "config/**"
       - "manifest_staging/**"
   pull_request:
     paths:
       - ".github/workflows/helm-lint.yaml"
       - "cmd/build/helmify/**"
-      - "config/manager/manager.yaml"
+      - "config/**"
       - "manifest_staging/**"
 
 permissions: read-all
@@ -42,7 +42,7 @@ jobs:
         helm lint manifest_staging/charts/gatekeeper/
         helm lint cmd/build/helmify/static/
 
-    - name: Check default source arguments
+    - name: Check default static manifest arguments
       env:
         GATEKEEPER_REQUIRE_HELM: "true"
-      run: go test ./cmd/build/helmify -run '^TestDefaultHelmArgumentsMatchSourceManifest$'
+      run: go test ./cmd/build/helmify -run '^TestDefaultHelmArgumentsMatchStaticManifest$'

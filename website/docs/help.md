@@ -132,71 +132,10 @@ Choose the workflow that matches the intended behavior:
 
 | Intended behavior | Source manifest | Helm generator | Follow-up |
 | --- | --- | --- | --- |
-| Same fixed argument in static and Helm installations | Add the argument to the appropriate Deployment in `config/manager/manager.yaml`. | No change. The chart inherits the argument automatically. | Add tests as needed and run `make manifests`. |
-| Source argument with a Helm-configurable value | Add the argument and its static default to `config/manager/manager.yaml`. | Add the public value and default to `cmd/build/helmify/static/values.yaml`, then add a `transformFlag` or `transformExact` entry to the appropriate workload in `cmd/build/helmify/args_config.go`. Add a `cmd/build/helmify/replacements.go` entry for every new `HELMSUBST` token. | Document the value in `cmd/build/helmify/static/README.md`, add tests for the supported values, and run `make manifests`. |
-| Argument intentionally available only in the static installation | Add the argument to the appropriate Deployment in `config/manager/manager.yaml`. | Add an `omitExact` entry to the appropriate workload in `cmd/build/helmify/args_config.go`. Use this only for an intentional compatibility difference. | Document why Helm omits the argument, add a test for the exception, and run `make manifests`. |
-| Argument available only through Helm | Do not add the argument to the source manifest. | Add any public value and default under `cmd/build/helmify/static`, then declare the argument in the workload's `helmOnly` list in `cmd/build/helmify/args_config.go`. Use `helmArgument` for one directly expressed argument or `helmTemplate` for a standalone marker. Add a `cmd/build/helmify/replacements.go` entry for every new `HELMSUBST` token. | Document the value, add tests for the supported values, and run `make manifests`. |
-
-Arguments that do not require Helm-specific behavior are inherited by the chart automatically. No
-change to the Helm generator is required for a fixed shared argument.
-
-Use the helper that matches how Helm owns the argument:
-
-| Helper | Use when |
-| --- | --- |
-| `transformFlag` | Helm replaces the value of an entire flag family, such as `--port=<value>`. |
-| `transformExact` | Only one complete argument has special behavior, such as `--operation=webhook`. |
-| `omitExact` | One exact source argument must exist but is intentionally omitted from the generated Helm workload. |
-| `helmArgument` | Helm always emits one argument whose `--flag` identity is directly available from the value. The value may contain an inline Go template. |
-| `helmTemplate` | Helm conditionally emits one or more arguments. Declare every identity it may emit. |
-
-Use `transformFlag` when Helm replaces the value of a flag, for example:
-
-```go
-transformFlag(
-    "new feature",
-    "--new-feature",
-    "--new-feature={{ .Values.newFeature }}",
-)
-```
-
-Use `transformExact` when only one complete argument has special meaning, such as a particular
-`--operation` value.
-
-Use `omitExact` only when preserving an intentional difference between static and Helm
-installations. It requires the exact source argument to remain present, but omits that argument
-from the generated Helm workload:
-
-```go
-omitExact(
-    "disabled OPA http.send builtin",
-    "--disable-opa-builtin={http.send}",
-)
-```
-
-Document the compatibility reason and add a test whenever introducing such an exception.
-
-If an argument must not be present in the static installation, add its value under
-`cmd/build/helmify/static`, declare it in the workload's `helmOnly` list in
-`cmd/build/helmify/args_config.go`, and document the value in
-`cmd/build/helmify/static/README.md`.
-
-Use `helmArgument` when the entry directly expresses one argument, including an argument with an
-inline Go template or embedded `HELMSUBST` token:
-
-```go
-helmArgument("--new-feature={{ .Values.newFeature }}")
-```
-
-Conditional or multi-argument templates use a standalone marker with `helmTemplate`. Declare every
-argument identity the replacement may emit:
-
-```go
-helmTemplate(
-    "HELMSUBST_NEW_FEATURE",
-    "--new-feature",
-)
-```
+| Same fixed argument in static and Helm installations | Add it to the appropriate Deployment in `config/manager/manager.yaml`. | None; the chart inherits it. | Add tests as needed and run `make manifests`. |
+| Shared argument with a Helm-configurable value | Add it with its static default. | Add the value and default under `cmd/build/helmify/static`. Use `transformFlag` for a flag family or `transformExact` for one complete argument. Use `transformExactWithHelmDefault` only for a documented compatibility difference. | Document the value, add tests, and run `make manifests`. |
+| Argument intentionally available only in the static installation | Add it to the appropriate Deployment. | Use `omitExact` and document why Helm omits it. | Add a test for the exception and run `make manifests`. |
+| Argument available only through Helm | Do not add it to the source manifest. | Add any value and default under `cmd/build/helmify/static`, then add it to the workload's `helmOnly` list. Use `helmArgument` for one directly expressed argument or `helmTemplate` for a conditional or multi-argument marker. | Document the value, add tests, and run `make manifests`. If Helm emits it by default, add the rendered manager-default value to `helmDefaultOnlyArguments` in `cmd/build/helmify/args_test.go`. |
 
 Every new `HELMSUBST` token, whether embedded in an argument or used as a standalone marker, must
 have a corresponding entry in `cmd/build/helmify/replacements.go`.
@@ -233,6 +172,11 @@ helm template gatekeeper manifest_staging/charts/gatekeeper \
 Generation fails when a source argument conflicts with a Helm-controlled argument, an expected
 Deployment cannot be transformed, or a required transformation no longer matches. Resolve the
 underlying ownership decision rather than copying the full argument list into the Helm overlay.
+
+`TestDefaultHelmArgumentsMatchStaticManifest` also fails when the default chart emits an argument
+that is neither in the static manifest nor listed in `helmDefaultOnlyArguments`, or when a listed
+value changes. A Helm default that changes behavior must be added to `config/manager/manager.yaml`
+so static installations receive it too.
 
 ## Contributing to Code
 

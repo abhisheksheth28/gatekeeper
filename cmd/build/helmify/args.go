@@ -13,10 +13,11 @@ const (
 )
 
 type argumentRule struct {
-	name        string
-	match       func(string) bool
-	replacement string
-	omit        bool
+	name                string
+	match               func(string) bool
+	replacement         string
+	helmDefaultArgument string
+	omit                bool
 }
 
 type argumentConfig struct {
@@ -38,6 +39,12 @@ func transformExact(name, source, replacement string) argumentRule {
 		},
 		replacement: replacement,
 	}
+}
+
+func transformExactWithHelmDefault(name, source, replacement, helmDefaultArgument string) argumentRule {
+	rule := transformExact(name, source, replacement)
+	rule.helmDefaultArgument = helmDefaultArgument
+	return rule
 }
 
 func transformFlag(name, flag, replacement string) argumentRule {
@@ -135,18 +142,23 @@ func transformDeploymentArguments(object string) (string, string, error) {
 	if start < 0 || start >= len(lines) {
 		return "", "", fmt.Errorf("deployment %q argument line %d is outside the document", name, argsKey.Line)
 	}
-	indent := lines[start][:len(lines[start])-len(strings.TrimLeft(lines[start], " "))]
+	keyOffset := argsKey.Column - 1
+	if keyOffset < 0 || keyOffset > len(lines[start]) {
+		return "", "", fmt.Errorf("deployment %q argument column %d is outside line %d", name, argsKey.Column, argsKey.Line)
+	}
+	keyPrefix := lines[start][:keyOffset]
+	argumentIndent := strings.Repeat(" ", keyOffset)
 	var end int
 	if nextKey != nil {
 		end = nextKey.Line - 1
 	} else {
-		end = argumentBlockEnd(lines, start, len(indent))
+		end = argumentBlockEnd(lines, start, len(argumentIndent))
 	}
 
 	replacement := make([]string, 0, len(rendered)+1)
-	replacement = append(replacement, indent+"args:")
+	replacement = append(replacement, keyPrefix+"args:")
 	for _, argument := range rendered {
-		replacement = append(replacement, indent+"- "+argument)
+		replacement = append(replacement, argumentIndent+"- "+argument)
 	}
 
 	lines = append(lines[:start], append(replacement, lines[end:]...)...)
@@ -226,6 +238,20 @@ func matchingRule(deployment, argument string, rules []argumentRule) (int, error
 func encodeArgument(deployment, argument string) (string, error) {
 	if strings.ContainsAny(argument, "\r\n") {
 		return "", fmt.Errorf("deployment %q argument %q contains a line break", deployment, argument)
+	}
+	if strings.Contains(argument, "{{") {
+		return "", fmt.Errorf(
+			"deployment %q passthrough argument %q contains Helm template syntax; add an explicit transformation rule",
+			deployment,
+			argument,
+		)
+	}
+	if strings.Contains(argument, "HELMSUBST") {
+		return "", fmt.Errorf(
+			"deployment %q passthrough argument %q contains a reserved Helm substitution marker; add an explicit transformation rule",
+			deployment,
+			argument,
+		)
 	}
 	encoded, err := yaml.Marshal(argument)
 	if err != nil {

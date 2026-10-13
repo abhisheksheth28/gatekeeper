@@ -373,6 +373,43 @@ spec:
 	}
 }
 
+func TestTransformDeploymentArgumentsPreservesSequenceItemPrefixWhenArgumentsAreFirst(t *testing.T) {
+	input := `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gatekeeper-controller-manager
+spec:
+  template:
+    spec:
+      containers:
+      - args:
+        - --port=8443
+        - --logtostderr
+        - --exempt-namespace=gatekeeper-system
+        - --operation=webhook
+        - --operation=mutation-webhook
+        - --disable-opa-builtin={http.send}
+        command:
+        - /manager
+`
+
+	got, _, err := transformDeploymentArguments(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "      - args:\n        - --port=HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_PORT") {
+		t.Fatalf("transformed argument list lost its sequence item prefix:\n%s", got)
+	}
+	if !strings.Contains(got, "        command:\n        - /manager") {
+		t.Fatalf("container command following the arguments was lost:\n%s", got)
+	}
+
+	var document yaml.Node
+	if err := yaml.Unmarshal([]byte(got), &document); err != nil {
+		t.Fatalf("transformed deployment is invalid YAML: %v\n%s", err, got)
+	}
+}
+
 func TestTransformDeploymentArgumentsRejectsAmbiguousManagerContainer(t *testing.T) {
 	input := `apiVersion: apps/v1
 kind: Deployment
@@ -437,6 +474,47 @@ func TestTransformArgumentsRejectsMultilineUnknownArgument(t *testing.T) {
 	if _, err := transformArguments(controllerManagerDeployment, source, controllerManagerArguments); err == nil ||
 		!strings.Contains(err.Error(), "contains a line break") {
 		t.Fatalf("got error %v, want a multiline argument error", err)
+	}
+}
+
+func TestEncodeArgumentRejectsReservedHelmSyntax(t *testing.T) {
+	tests := []struct {
+		name     string
+		argument string
+		want     string
+	}{
+		{
+			name:     "Helm template",
+			argument: "--future={{ .Values.future }}",
+			want:     "contains Helm template syntax",
+		},
+		{
+			name:     "Helm substitution marker",
+			argument: "--future=HELMSUBST_FUTURE",
+			want:     "contains a reserved Helm substitution marker",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := encodeArgument(controllerManagerDeployment, test.argument)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("got error %v, want error containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestEncodeArgumentAcceptsStaticSyntax(t *testing.T) {
+	for _, argument := range []string{
+		"--future=value",
+		"--disable-opa-builtin={http.send}",
+	} {
+		t.Run(argument, func(t *testing.T) {
+			if _, err := encodeArgument(controllerManagerDeployment, argument); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
@@ -580,16 +658,14 @@ spec:
 	}
 }
 
-func TestSourceManifestCanBeTransformed(t *testing.T) {
-	contents, err := os.ReadFile("../../../config/manager/manager.yaml")
+func TestStaticManifestCanBeTransformed(t *testing.T) {
+	contents, err := os.ReadFile("../../../manifest_staging/deploy/gatekeeper.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	transformed := 0
 	for _, object := range strings.Split(string(contents), "\n---\n") {
-		object = strings.Replace(object, "  name: controller-manager\n", "  name: gatekeeper-controller-manager\n", 1)
-		object = strings.Replace(object, "  name: audit\n", "  name: gatekeeper-audit\n", 1)
 		got, _, err := transformDeploymentArguments(object)
 		if err != nil {
 			t.Fatal(err)
@@ -599,11 +675,57 @@ func TestSourceManifestCanBeTransformed(t *testing.T) {
 		}
 	}
 	if transformed != 2 {
-		t.Fatalf("transformed %d Deployments from source manifest, want 2", transformed)
+		t.Fatalf("transformed %d Deployments from static manifest, want 2", transformed)
 	}
 }
 
-func TestDefaultHelmArgumentsMatchSourceManifest(t *testing.T) {
+// helmDefaultOnlyArguments lists arguments that the default Helm chart emits
+// but the static manifest omits. Each entry must equal the manager's built-in
+// default so static and Helm installations behave the same. Add behavior-changing
+// defaults to config/manager/manager.yaml instead.
+var helmDefaultOnlyArguments = map[string][]string{
+	controllerManagerDeployment: {
+		"--health-addr=:9090",
+		"--prometheus-port=8888",
+		"--log-denies=false",
+		"--admission-events-involved-namespace=false",
+		"--log-level=INFO",
+		"--enable-external-data=true",
+		"--enable-generator-resource-expansion=true",
+		"--log-mutations=false",
+		"--mutation-annotations=false",
+		"--disable-cert-rotation=false",
+		"--max-serving-threads=-1",
+		"--tls-min-version=1.3",
+		"--validating-webhook-configuration-name=gatekeeper-validating-webhook-configuration",
+		"--mutating-webhook-configuration-name=gatekeeper-mutating-webhook-configuration",
+		"--external-data-provider-response-cache-ttl=3m",
+		"--enable-k8s-native-validation=true",
+		"--metrics-backend=prometheus",
+	},
+	auditDeployment: {
+		"--audit-interval=60",
+		"--log-level=INFO",
+		"--constraint-violations-limit=20",
+		"--validating-webhook-configuration-name=gatekeeper-validating-webhook-configuration",
+		"--mutating-webhook-configuration-name=gatekeeper-mutating-webhook-configuration",
+		"--audit-from-cache=false",
+		"--audit-chunk-size=500",
+		"--audit-match-kind-only=false",
+		"--audit-events-involved-namespace=false",
+		"--audit-connection=audit-connection",
+		"--audit-channel=audit-channel",
+		"--health-addr=:9090",
+		"--prometheus-port=8888",
+		"--enable-external-data=true",
+		"--enable-generator-resource-expansion=true",
+		"--metrics-backend=prometheus",
+		"--external-data-provider-response-cache-ttl=3m",
+		"--enable-k8s-native-validation=true",
+	},
+}
+
+func TestDefaultHelmArgumentsMatchStaticManifest(t *testing.T) {
 	helm, err := exec.LookPath("helm")
 	if err != nil {
 		if os.Getenv("GATEKEEPER_REQUIRE_HELM") == "true" {
@@ -612,19 +734,19 @@ func TestDefaultHelmArgumentsMatchSourceManifest(t *testing.T) {
 		t.Skip("helm is not installed")
 	}
 
-	sourceManifest, err := os.Open("../../../config/manager/manager.yaml")
+	staticManifest, err := os.Open("../../../manifest_staging/deploy/gatekeeper.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := sourceManifest.Close(); err != nil {
-			t.Errorf("close source manifest: %v", err)
+		if err := staticManifest.Close(); err != nil {
+			t.Errorf("close static manifest: %v", err)
 		}
 	})
 
-	sourceArguments, err := readDeploymentArguments(sourceManifest, map[string]string{
-		"controller-manager": controllerManagerDeployment,
-		"audit":              auditDeployment,
+	staticArguments, err := readDeploymentArguments(staticManifest, map[string]string{
+		controllerManagerDeployment: controllerManagerDeployment,
+		auditDeployment:             auditDeployment,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -655,44 +777,61 @@ func TestDefaultHelmArgumentsMatchSourceManifest(t *testing.T) {
 		auditDeployment:             auditArguments,
 	} {
 		t.Run(deployment, func(t *testing.T) {
-			expected, err := expectedDefaultArguments(deployment, sourceArguments[deployment], config)
+			expected, err := expectedDefaultArguments(deployment, staticArguments[deployment], config)
 			if err != nil {
 				t.Fatal(err)
 			}
-			missing, unexplained, err := defaultArgumentDifferences(expected, renderedArguments[deployment], config)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(missing) > 0 || len(unexplained) > 0 {
+			expected = append(expected, helmDefaultOnlyArguments[deployment]...)
+			missing, unexpected := defaultArgumentDifferences(expected, renderedArguments[deployment])
+			if len(missing) > 0 || len(unexpected) > 0 {
 				t.Errorf(
-					"default arguments differ from the source manifest:\nmissing source defaults: %q\nunexplained rendered defaults: %q",
+					"default Helm arguments differ from the static manifest:\nmissing: %q\nunexpected: %q\n"+
+						"Add defaults that change behavior to config/manager/manager.yaml. Update "+
+						"helmDefaultOnlyArguments only when the argument equals the manager's built-in default.",
 					missing,
-					unexplained,
+					unexpected,
 				)
 			}
 		})
 	}
 }
 
-func TestDefaultArgumentDifferencesDetectsChangedAndDuplicateDefaults(t *testing.T) {
+func TestExpectedDefaultArguments(t *testing.T) {
 	config := argumentConfig{
-		helmOnly: []helmOnlyArgument{
-			helmArgument("--health-addr=:9090"),
+		rules: []argumentRule{
+			transformExact("unchanged default", "--unchanged", "HELMSUBST_UNCHANGED"),
+			transformExactWithHelmDefault(
+				"different Helm default",
+				"--different=source",
+				"HELMSUBST_DIFFERENT",
+				"--different=helm",
+			),
+			omitExact("omitted default", "--omitted"),
 		},
 	}
-	missing, unexplained, err := defaultArgumentDifferences(
-		[]string{"--port=8443", "--logtostderr"},
-		[]string{"--port=9443", "--logtostderr", "--logtostderr", "--health-addr=:9090"},
-		config,
-	)
+	source := []string{"--unchanged", "--different=source", "--omitted", "--inherited"}
+
+	got, err := expectedDefaultArguments("test", source, config)
 	if err != nil {
 		t.Fatal(err)
 	}
+	want := []string{"--unchanged", "--different=helm", "--inherited"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("expected default arguments = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultArgumentDifferencesDetectsChangedDuplicateAndUnpinnedDefaults(t *testing.T) {
+	missing, unexpected := defaultArgumentDifferences(
+		[]string{"--port=8443", "--logtostderr", "--health-addr=:9090"},
+		[]string{"--port=9443", "--logtostderr", "--logtostderr", "--health-addr=:9090", "--operation=generate"},
+	)
 	if !slices.Equal(missing, []string{"--port=8443"}) {
 		t.Errorf("missing arguments = %q, want [--port=8443]", missing)
 	}
-	if !slices.Equal(unexplained, []string{"--port=9443", "--logtostderr"}) {
-		t.Errorf("unexplained arguments = %q, want [--port=9443 --logtostderr]", unexplained)
+	want := []string{"--port=9443", "--logtostderr", "--operation=generate"}
+	if !slices.Equal(unexpected, want) {
+		t.Errorf("unexpected arguments = %q, want %q", unexpected, want)
 	}
 }
 
@@ -805,26 +944,22 @@ func expectedDefaultArguments(deployment string, source []string, config argumen
 		if err != nil {
 			return nil, err
 		}
-		if match >= 0 && config.rules[match].omit {
-			continue
-		}
-
-		// Helm has originally enabled audit certificate rotation by default,
-		// while the static manifest disables it.
-		if deployment == auditDeployment && argument == "--disable-cert-rotation" {
-			expected = append(expected, "--disable-cert-rotation=false")
-			continue
+		if match >= 0 {
+			rule := config.rules[match]
+			if rule.omit {
+				continue
+			}
+			if rule.helmDefaultArgument != "" {
+				expected = append(expected, rule.helmDefaultArgument)
+				continue
+			}
 		}
 		expected = append(expected, argument)
 	}
 	return expected, nil
 }
 
-func defaultArgumentDifferences(
-	expected []string,
-	rendered []string,
-	config argumentConfig,
-) ([]string, []string, error) {
+func defaultArgumentDifferences(expected, rendered []string) ([]string, []string) {
 	remaining := append([]string(nil), rendered...)
 	var missing []string
 	for _, argument := range expected {
@@ -835,33 +970,7 @@ func defaultArgumentDifferences(
 		}
 		remaining = slices.Delete(remaining, index, index+1)
 	}
-
-	var unexplained []string
-	for _, argument := range remaining {
-		matches, err := matchesHelmOnlyArgument(argument, config.helmOnly)
-		if err != nil {
-			return nil, nil, err
-		}
-		if !matches {
-			unexplained = append(unexplained, argument)
-		}
-	}
-	return missing, unexplained, nil
-}
-
-func matchesHelmOnlyArgument(argument string, helmOnly []helmOnlyArgument) (bool, error) {
-	for _, candidate := range helmOnly {
-		identities, err := candidate.collisionIdentities()
-		if err != nil {
-			return false, err
-		}
-		for _, identity := range identities {
-			if argumentIdentityMatches(identity, argument) {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
+	return missing, remaining
 }
 
 func emittedTemplateArguments(replacement string) []string {

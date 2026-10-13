@@ -61,7 +61,7 @@ var controllerManagerArguments = argumentConfig{
 			"HELMSUBST_DEPLOYMENT_DEFAULT_K8S_NATIVE_VALIDATION_FAILURE_POLICY",
 			"--default-k8s-native-validation-failure-policy",
 		),
-		helmTemplate("HELMBUST_ENABLE_TLS_APISERVER_AUTHENTICATION", "--client-cert-name"),
+		helmTemplate("HELMSUBST_ENABLE_TLS_APISERVER_AUTHENTICATION", "--client-cert-name"),
 		helmTemplate(
 			"HELMSUBST_METRICS_BACKEND_ARG",
 			"--metrics-backend",
@@ -78,6 +78,7 @@ var controllerManagerArguments = argumentConfig{
 		helmTemplate("HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_LOGFILE", "--log-file"),
 		helmTemplate("HELMSUBST_DEPLOYMENT_DEFAULT_CREATE_VAP_FOR_TEMPLATES", "--default-create-vap-for-templates"),
 		helmTemplate("HELMSUBST_DEPLOYMENT_DEFAULT_CREATE_VAPB_FOR_CONSTRAINTS", "--default-create-vap-binding-for-constraints"),
+		helmTemplate("HELMSUBST_DEPLOYMENT_VAP_GENERATION_MODE", "--vap-generation-mode"),
 		helmTemplate("HELMSUBST_DEPLOYMENT_DEFAULT_WAIT_VAPB_GENERATION", "--default-wait-for-vapb-generation"),
 		helmTemplate("HELMSUBST_READINESS_RETRIES", "--readiness-retries"),
 		helmTemplate("HELMSUBST_ENABLE_PPROF", "--enable-pprof"),
@@ -105,10 +106,13 @@ var auditArguments = argumentConfig{
 		// Preserve the original Helm behavior: disabledBuiltins only applies
 		// to the controller-manager Deployment.
 		omitExact("disabled OPA http.send builtin", "--disable-opa-builtin={http.send}"),
-		transformExact(
+		// Helm has always enabled audit certificate rotation by default, while
+		// the static manifest disables it.
+		transformExactWithHelmDefault(
 			"certificate rotation",
 			"--disable-cert-rotation",
 			"--disable-cert-rotation={{ or .Values.audit.disableCertRotation .Values.externalCertInjection.enabled }}",
+			"--disable-cert-rotation=false",
 		),
 	},
 	helmOnly: []helmOnlyArgument{
@@ -155,6 +159,7 @@ var auditArguments = argumentConfig{
 		),
 		helmTemplate("HELMSUBST_DEPLOYMENT_DEFAULT_CREATE_VAP_FOR_TEMPLATES", "--default-create-vap-for-templates"),
 		helmTemplate("HELMSUBST_DEPLOYMENT_DEFAULT_CREATE_VAPB_FOR_CONSTRAINTS", "--default-create-vap-binding-for-constraints"),
+		helmTemplate("HELMSUBST_DEPLOYMENT_VAP_GENERATION_MODE", "--vap-generation-mode"),
 		helmTemplate("HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_EXEMPT_NAMESPACES", "--exempt-namespace"),
 		helmTemplate("HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_EXEMPT_NAMESPACE_PREFIXES", "--exempt-namespace-prefix"),
 		helmTemplate("HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_EXEMPT_NAMESPACE_SUFFIXES", "--exempt-namespace-suffix"),
