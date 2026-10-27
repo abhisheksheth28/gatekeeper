@@ -12,20 +12,24 @@ import (
 	"path"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/go-logr/logr/funcr"
 	"github.com/onsi/gomega"
 	constraintclient "github.com/open-policy-agent/frameworks/constraint/pkg/client"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/rego"
+	constrainttypes "github.com/open-policy-agent/frameworks/constraint/pkg/types"
 	"github.com/open-policy-agent/gatekeeper/v3/apis"
 	configv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/config/v1alpha1"
 	connectionv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/connection/v1alpha1"
 	statusv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/status/v1alpha1"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/controller/config/process"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/expansion"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/export"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/export/disk"
 	exportutil "github.com/open-policy-agent/gatekeeper/v3/pkg/export/util"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/fakes"
@@ -38,6 +42,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -1039,6 +1044,132 @@ func Test_reportExportConnectionErrors(t *testing.T) {
 					g.Expect(publishStatus.LastSuccessTime).To(gomega.BeNil())
 				}
 			}
+		})
+	}
+}
+
+type scriptedExporter struct {
+	// errs holds the result of each Publish call in order; later calls succeed.
+	errs  []error
+	calls int
+}
+
+func (e *scriptedExporter) Publish(context.Context, string, string, interface{}) error {
+	e.calls++
+	if e.calls <= len(e.errs) {
+		return e.errs[e.calls-1]
+	}
+	return nil
+}
+
+func (*scriptedExporter) UpsertConnection(context.Context, interface{}, string, string) error {
+	return nil
+}
+
+func (*scriptedExporter) CloseConnection(string) error { return nil }
+
+type auditExportTestManager struct {
+	controllerruntimemanager.Manager
+	client client.Client
+}
+
+func (m *auditExportTestManager) GetAPIReader() client.Reader { return m.client }
+
+func (m *auditExportTestManager) GetClient() client.Client { return m.client }
+
+func (m *auditExportTestManager) GetScheme() *runtime.Scheme { return scheme.Scheme }
+
+func TestAuditExportRun(t *testing.T) {
+	oldExportEnabled := *exportutil.ExportEnabled
+	*exportutil.ExportEnabled = true
+	t.Cleanup(func() { *exportutil.ExportEnabled = oldExportEnabled })
+	require.NoError(t, apis.AddToScheme(scheme.Scheme))
+
+	notConfigured := fmt.Errorf("%w, name: %s", export.ErrConnectionNotConfigured, *exportutil.AuditConnection)
+	pod := fakes.Pod(fakes.WithNamespace(util.GetNamespace()), fakes.WithName("audit-pod"))
+	constraint := &unstructured.Unstructured{}
+	constraint.SetGroupVersionKind(schema.GroupVersionKind{Group: "constraints.gatekeeper.sh", Version: "v1beta1", Kind: "K8sRequiredLabels"})
+	constraint.SetName("required-labels")
+	violations := make([]Result, 2)
+	for i := range violations {
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "Namespace"})
+		obj.SetName(fmt.Sprintf("namespace-%d", i))
+		violations[i] = Result{Result: &constrainttypes.Result{Constraint: constraint, Msg: "missing label", EnforcementAction: string(util.Deny)}, obj: obj}
+	}
+
+	// Each run publishes a start marker, two violations and an end marker.
+	tests := []struct {
+		name              string
+		publishErrs       []error
+		missingConnection bool
+		wantCalls         int
+		wantStatus        bool
+		wantPublished     int64
+		wantPublishErrors int64
+		wantErrorLogs     bool
+	}{
+		{
+			name:        "connection not configured skips the run",
+			publishErrs: []error{notConfigured},
+			wantCalls:   1,
+		},
+		{
+			name:          "connection removed mid-run stops publishing",
+			publishErrs:   []error{nil, notConfigured},
+			wantCalls:     2,
+			wantPublished: 1,
+		},
+		{
+			name:              "failed start publish continues the run",
+			publishErrs:       []error{errors.New("mkdir failed")},
+			wantCalls:         4,
+			wantStatus:        true,
+			wantPublished:     3,
+			wantPublishErrors: 1,
+			wantErrorLogs:     true,
+		},
+		{
+			name:              "connection missing at status write",
+			missingConnection: true,
+			wantCalls:         4,
+			wantPublished:     4,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			builder := fake.NewClientBuilder().WithScheme(scheme.Scheme)
+			if !tc.missingConnection {
+				builder = builder.WithObjects(&connectionv1alpha1.Connection{ObjectMeta: metav1.ObjectMeta{Name: *exportutil.AuditConnection, Namespace: util.GetNamespace()}})
+			}
+			k8sClient := builder.Build()
+			exporter := &scriptedExporter{errs: tc.publishErrs}
+			var logs []string
+			am := &Manager{
+				exportSystem: exporter,
+				reporter:     &reporter{},
+				mgr:          &auditExportTestManager{client: k8sClient},
+				getPod:       func(context.Context) (*corev1.Pod, error) { return pod, nil },
+				log:          funcr.New(func(_, args string) { logs = append(logs, args) }, funcr.Options{}),
+			}
+			state := &auditExportPublishingState{Errors: map[string]error{}}
+
+			am.startAuditExport(state, "timestamp")
+			am.addAuditResponsesToUpdateLists(map[util.KindVersionName]*LimitQueue{}, violations, map[util.KindVersionName]int64{}, map[util.EnforcementAction]int64{}, "timestamp", state)
+			am.finishAuditExport(context.Background(), state, "timestamp")
+
+			require.Equal(t, tc.wantCalls, exporter.calls)
+			statuses := &statusv1alpha1.ConnectionPodStatusList{}
+			require.NoError(t, k8sClient.List(context.Background(), statuses))
+			require.Equal(t, tc.wantStatus, len(statuses.Items) == 1)
+			require.Equal(t, tc.wantPublished, am.reporter.auditExportPublished.Load())
+			require.Equal(t, tc.wantPublishErrors, am.reporter.auditExportPublishErrors.Load())
+			hasErrorLogs := false
+			for _, entry := range logs {
+				hasErrorLogs = hasErrorLogs || strings.Contains(entry, `"error"=`)
+			}
+			require.Equal(t, tc.wantErrorLogs, hasErrorLogs, logs)
 		})
 	}
 }

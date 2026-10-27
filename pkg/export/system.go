@@ -2,6 +2,7 @@ package export
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -12,6 +13,10 @@ import (
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/export/disk"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/export/driver"
 )
+
+// ErrConnectionNotConfigured is returned when publishing to a connection name
+// that has no active connection.
+var ErrConnectionNotConfigured = errors.New("connection is not initialized")
 
 var supportedDrivers = map[string]driver.Driver{
 	dapr.Name: dapr.Connections,
@@ -48,7 +53,7 @@ func (s *System) Publish(ctx context.Context, connectionName string, subject str
 	if dName, ok := s.connectionToDriver[connectionName]; ok {
 		return supportedDrivers[dName].Publish(ctx, connectionName, msg, subject)
 	}
-	return fmt.Errorf("connection is not initialized, name: %s ", connectionName)
+	return fmt.Errorf("%w, name: %s", ErrConnectionNotConfigured, connectionName)
 }
 
 func (s *System) PublishBatch(ctx context.Context, connectionName string, subject string, messages []any) []error {
@@ -56,7 +61,7 @@ func (s *System) PublishBatch(ctx context.Context, connectionName string, subjec
 	defer s.mux.RUnlock()
 	driverName, ok := s.connectionToDriver[connectionName]
 	if !ok {
-		return batchErrors(len(messages), fmt.Errorf("connection is not initialized, name: %s ", connectionName))
+		return batchErrors(len(messages), fmt.Errorf("%w, name: %s", ErrConnectionNotConfigured, connectionName))
 	}
 	connectionDriver := supportedDrivers[driverName]
 	if batchDriver, ok := connectionDriver.(driver.BatchDriver); ok {

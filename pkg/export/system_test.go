@@ -252,7 +252,7 @@ func TestSystem_Publish(t *testing.T) {
 		name    string
 		fields  fields
 		args    args
-		wantErr bool
+		wantErr error
 	}{
 		{
 			name: "There are no connections established",
@@ -260,7 +260,7 @@ func TestSystem_Publish(t *testing.T) {
 				connections: nil,
 			},
 			args:    args{ctx: context.Background(), connection: "audit", topic: "test", msg: nil},
-			wantErr: true,
+			wantErr: ErrConnectionNotConfigured,
 		},
 		{
 			name: "Exporting to a connection that does not exist",
@@ -268,7 +268,7 @@ func TestSystem_Publish(t *testing.T) {
 				connections: map[string]string{"audit": dapr.Name},
 			},
 			args:    args{ctx: context.Background(), connection: "test", topic: "test", msg: nil},
-			wantErr: true,
+			wantErr: ErrConnectionNotConfigured,
 		},
 		{
 			name: "Exporting to a connection that does exist",
@@ -276,7 +276,7 @@ func TestSystem_Publish(t *testing.T) {
 				connections: testSystem.connectionToDriver,
 			},
 			args:    args{ctx: context.Background(), connection: "dapr", topic: "test", msg: nil},
-			wantErr: false,
+			wantErr: nil,
 		},
 	}
 	for _, tt := range tests {
@@ -285,9 +285,16 @@ func TestSystem_Publish(t *testing.T) {
 				mux:                sync.RWMutex{},
 				connectionToDriver: tt.fields.connections,
 			}
-			if err := s.Publish(tt.args.ctx, tt.args.connection, tt.args.topic, tt.args.msg); (err != nil) != tt.wantErr {
-				t.Errorf("System.Publish() error = %v, wantErr %v", err, tt.wantErr)
+			err := s.Publish(tt.args.ctx, tt.args.connection, tt.args.topic, tt.args.msg)
+			batchErrs := s.PublishBatch(tt.args.ctx, tt.args.connection, tt.args.topic, []any{tt.args.msg})
+			assert.Len(t, batchErrs, 1)
+			if tt.wantErr == nil {
+				assert.NoError(t, err)
+				assert.NoError(t, batchErrs[0])
+				return
 			}
+			assert.ErrorIs(t, err, tt.wantErr)
+			assert.ErrorIs(t, batchErrs[0], tt.wantErr)
 		})
 	}
 }

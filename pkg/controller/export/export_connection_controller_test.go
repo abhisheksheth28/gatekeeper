@@ -2,13 +2,16 @@ package export
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr/funcr"
 	"github.com/onsi/gomega"
 	connectionv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/connection/v1alpha1"
 	statusv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/status/v1alpha1"
@@ -31,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	k8sscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/util/workqueue"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -433,7 +437,7 @@ func TestReconcile_E2E(t *testing.T) {
 	originalReconciler := newReconciler(mgr, export.NewSystem(), auditConnectionName, getPod)
 	wrappedReconciler, requests := testutils.SetupTestReconcile(originalReconciler)
 	// Register the controller with the manager
-	require.NoError(t, add(mgr, wrappedReconciler))
+	require.NoError(t, add(mgr, wrappedReconciler, originalReconciler.auditConnectionName))
 	// Start the manager and let it run in the background
 	testutils.StartManager(ctx, t, mgr)
 
@@ -829,7 +833,7 @@ func TestReconcile_ConnectionPodStatus(t *testing.T) {
 	originalReconciler := newReconciler(mgr, export.NewSystem(), auditConnectionName, getPod)
 	wrappedReconciler, requests := testutils.SetupTestReconcile(originalReconciler)
 	// Register the controller with the manager
-	require.NoError(t, add(mgr, wrappedReconciler))
+	require.NoError(t, add(mgr, wrappedReconciler, originalReconciler.auditConnectionName))
 	// Start the manager and let it run in the background
 	testutils.StartManager(ctx, t, mgr)
 
@@ -966,7 +970,7 @@ func TestReconcile_UnsupportedConnectionName(t *testing.T) {
 	}
 	originalReconciler := newReconciler(mgr, export.NewSystem(), auditConnectionNameGood, getPod)
 	wrappedReconciler, requests := testutils.SetupTestReconcile(originalReconciler)
-	require.NoError(t, add(mgr, wrappedReconciler))
+	require.NoError(t, add(mgr, wrappedReconciler, originalReconciler.auditConnectionName))
 	testutils.StartManager(ctx, t, mgr)
 
 	t.Run("Reconcile called for new Connection create for an unsupported connection name and the ConnectionPodStatus has an UpsertError and doesn't impact Create for a valid Connection object", func(t *testing.T) {
@@ -1086,6 +1090,183 @@ func TestReconcile_UnsupportedConnectionName(t *testing.T) {
 			k8sClient.Delete(ctx, &connPodStatusObjGood) // nolint:errcheck
 		}()
 	})
+}
+
+func TestReconcileConnectionState(t *testing.T) {
+	testutils.Setenv(t, "POD_NAMESPACE", "gatekeeper-system")
+	const auditConnectionName = "audit-connection"
+	testScheme := runtime.NewScheme()
+	require.NoError(t, connectionv1alpha1.AddToScheme(testScheme))
+	require.NoError(t, statusv1alpha1.AddToScheme(testScheme))
+	require.NoError(t, corev1.AddToScheme(testScheme))
+	pod := fakes.Pod(fakes.WithNamespace(util.GetNamespace()), fakes.WithName("gatekeeper-pod"))
+	connection := func(name string, withConfig bool) *connectionv1alpha1.Connection {
+		conn := &connectionv1alpha1.Connection{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: util.GetNamespace()}}
+		if withConfig {
+			conn.Spec = connectionv1alpha1.ConnectionSpec{Driver: disk.Name, Config: &anythingtypes.Anything{Value: diskConnectionConfig("/tmp/violations")}}
+		}
+		return conn
+	}
+	valid := connection(auditConnectionName, true)
+	mockErr := errors.New("mock error")
+
+	type step struct {
+		// connection is the object present for the reconcile; nil means it does not exist.
+		connection  *connectionv1alpha1.Connection
+		getErr      error
+		upsertErr   error
+		closeErr    error
+		getPodErr   error
+		wantState   connectionState
+		wantRequeue bool
+		wantErr     bool
+	}
+	tests := []struct {
+		name            string
+		steps           []step
+		wantUpserts     int
+		wantCloses      int
+		wantStatuses    int
+		wantRemovedLogs int
+	}{
+		{
+			name:       "missing connection is not configured",
+			steps:      []step{{wantState: stateNotConfigured}},
+			wantCloses: 1,
+		},
+		{
+			name:       "missing connection with failing pod lookup",
+			steps:      []step{{getPodErr: mockErr, wantState: stateNotConfigured, wantErr: true}},
+			wantCloses: 1,
+		},
+		{
+			name: "failed close is not configured and requeues",
+			steps: []step{
+				{connection: valid, wantState: stateReady},
+				{closeErr: mockErr, wantState: stateNotConfigured, wantRequeue: true},
+			},
+			wantUpserts: 1,
+			wantCloses:  1,
+		},
+		{
+			name: "deleting a ready connection logs removal once",
+			steps: []step{
+				{connection: valid, wantState: stateReady},
+				{wantState: stateNotConfigured},
+				{wantState: stateNotConfigured},
+			},
+			wantUpserts:     1,
+			wantCloses:      2,
+			wantRemovedLogs: 1,
+		},
+		{
+			name: "get error leaves state unchanged",
+			steps: []step{
+				{connection: valid, wantState: stateReady},
+				{connection: valid, getErr: mockErr, wantState: stateReady, wantErr: true},
+			},
+			wantUpserts:  1,
+			wantStatuses: 1,
+		},
+		{
+			name: "invalid edit keeps the working connection",
+			steps: []step{
+				{connection: valid, wantState: stateReady},
+				{connection: connection(auditConnectionName, false), wantState: stateError, wantRequeue: true},
+			},
+			wantUpserts:  1,
+			wantStatuses: 1,
+		},
+		{
+			name: "upsert failure recovers without an edit",
+			steps: []step{
+				{connection: valid, upsertErr: mockErr, wantState: stateError, wantRequeue: true},
+				{connection: valid, wantState: stateReady},
+			},
+			wantUpserts:  2,
+			wantStatuses: 1,
+		},
+		{
+			name:         "unsupported connection name leaves state unchanged",
+			steps:        []step{{connection: connection("other-connection", true), wantState: stateUnknown}},
+			wantStatuses: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			k8sClient := fake.NewClientBuilder().WithScheme(testScheme).Build()
+			reader := &FakeClient{Client: k8sClient}
+			system := &FakeExportSystem{}
+			var getPodErr error
+			var logs []string
+			r := &Reconciler{
+				reader:              reader,
+				writer:              k8sClient,
+				scheme:              testScheme,
+				system:              system,
+				auditConnectionName: auditConnectionName,
+				getPod: func(context.Context) (*corev1.Pod, error) {
+					return pod, getPodErr
+				},
+				log: funcr.New(func(_, args string) { logs = append(logs, args) }, funcr.Options{}),
+			}
+
+			for i, st := range tc.steps {
+				name := auditConnectionName
+				existing := &connectionv1alpha1.Connection{}
+				existingErr := k8sClient.Get(ctx, types.NamespacedName{Namespace: util.GetNamespace(), Name: name}, existing)
+				switch {
+				case st.connection == nil && existingErr == nil:
+					require.NoError(t, k8sClient.Delete(ctx, existing))
+				case st.connection != nil:
+					name = st.connection.Name
+					desired := st.connection.DeepCopy()
+					if existingErr == nil && existing.Name == name {
+						desired.ResourceVersion = existing.ResourceVersion
+						require.NoError(t, k8sClient.Update(ctx, desired))
+					} else {
+						require.NoError(t, k8sClient.Create(ctx, desired))
+					}
+				}
+				reader.getErr = st.getErr
+				system.UpsertConnectionError = st.upsertErr
+				system.CloseConnectionError = st.closeErr
+				getPodErr = st.getPodErr
+
+				result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: util.GetNamespace(), Name: name}})
+				require.Equal(t, st.wantErr, err != nil, "step %d: %v", i, err)
+				require.Equal(t, st.wantRequeue, result.Requeue, "step %d", i) // nolint:staticcheck
+				require.Equal(t, st.wantState, connectionState(r.state.Load()), "step %d", i)
+			}
+
+			require.Equal(t, tc.wantUpserts, system.UpsertConnectionCalledCount)
+			require.Equal(t, tc.wantCloses, system.CloseConnectionCalledCount)
+			statuses := &statusv1alpha1.ConnectionPodStatusList{}
+			require.NoError(t, k8sClient.List(ctx, statuses))
+			require.Len(t, statuses.Items, tc.wantStatuses)
+			removedLogs := 0
+			for _, entry := range logs {
+				if strings.Contains(entry, `"msg"="removed connection"`) {
+					removedLogs++
+				}
+			}
+			require.Equal(t, tc.wantRemovedLogs, removedLogs)
+		})
+	}
+}
+
+func TestSeedConnectionSourceQueuesConfiguredConnection(t *testing.T) {
+	testutils.Setenv(t, "POD_NAMESPACE", "gatekeeper-system")
+	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]())
+	defer queue.ShutDown()
+
+	require.NoError(t, seedConnectionSource("audit-connection").Start(context.Background(), queue))
+
+	require.Equal(t, 1, queue.Len())
+	request, _ := queue.Get()
+	require.Equal(t, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "gatekeeper-system", Name: "audit-connection"}}, request)
 }
 
 type FakeClient struct {
