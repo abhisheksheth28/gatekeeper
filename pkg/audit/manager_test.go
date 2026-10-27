@@ -1107,7 +1107,7 @@ func TestAuditExportRun(t *testing.T) {
 		wantStatus        bool
 		wantPublished     int64
 		wantPublishErrors int64
-		wantErrorLogs     bool
+		wantErrorLogs     int
 	}{
 		{
 			name:        "connection not configured skips the run",
@@ -1127,7 +1127,7 @@ func TestAuditExportRun(t *testing.T) {
 			wantStatus:        true,
 			wantPublished:     3,
 			wantPublishErrors: 1,
-			wantErrorLogs:     true,
+			wantErrorLogs:     1,
 		},
 		{
 			name:              "connection missing at status write",
@@ -1165,13 +1165,85 @@ func TestAuditExportRun(t *testing.T) {
 			require.Equal(t, tc.wantStatus, len(statuses.Items) == 1)
 			require.Equal(t, tc.wantPublished, am.reporter.auditExportPublished.Load())
 			require.Equal(t, tc.wantPublishErrors, am.reporter.auditExportPublishErrors.Load())
-			hasErrorLogs := false
-			for _, entry := range logs {
-				hasErrorLogs = hasErrorLogs || strings.Contains(entry, `"error"=`)
-			}
-			require.Equal(t, tc.wantErrorLogs, hasErrorLogs, logs)
+			require.Equal(t, tc.wantErrorLogs, countLogs(logs, `"error"=`), logs)
 		})
 	}
+}
+
+func countLogs(logs []string, substr string) int {
+	n := 0
+	for _, entry := range logs {
+		if strings.Contains(entry, substr) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestAuditExportLogLimiting(t *testing.T) {
+	oldExportEnabled := *exportutil.ExportEnabled
+	*exportutil.ExportEnabled = true
+	t.Cleanup(func() { *exportutil.ExportEnabled = oldExportEnabled })
+	require.NoError(t, apis.AddToScheme(scheme.Scheme))
+
+	errA := errors.New("class A: failed")
+	errB := errors.New("class B: failed")
+	notConfigured := fmt.Errorf("%w, name: %s", export.ErrConnectionNotConfigured, *exportutil.AuditConnection)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme.Scheme).
+		WithObjects(&connectionv1alpha1.Connection{ObjectMeta: metav1.ObjectMeta{Name: *exportutil.AuditConnection, Namespace: util.GetNamespace()}}).
+		Build()
+	pod := fakes.Pod(fakes.WithNamespace(util.GetNamespace()), fakes.WithName("audit-pod"))
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var logs []string
+	am := &Manager{
+		reporter: &reporter{},
+		mgr:      &auditExportTestManager{client: k8sClient},
+		getPod:   func(context.Context) (*corev1.Pod, error) { return pod, nil },
+		log:      funcr.New(func(_, args string) { logs = append(logs, args) }, funcr.Options{}),
+	}
+	am.exportLogs.now = func() time.Time { return now }
+
+	steps := []struct {
+		name          string
+		after         time.Duration
+		publishErr    error
+		wantErrorLogs int
+		wantRecovered int
+	}{
+		{name: "first failure logs", publishErr: errA, wantErrorLogs: 1},
+		{name: "same failure within the interval is suppressed", after: time.Minute, publishErr: errA},
+		{name: "same failure after the interval logs a reminder", after: 11 * time.Minute, publishErr: errA, wantErrorLogs: 1},
+		{name: "new error class logs", after: time.Minute, publishErr: errB, wantErrorLogs: 1},
+		{name: "clean run logs recovery", after: time.Minute, wantRecovered: 1},
+		{name: "second clean run logs nothing", after: time.Minute},
+		{name: "failure after recovery logs", after: time.Minute, publishErr: errA, wantErrorLogs: 1},
+		{name: "not configured logs nothing", after: time.Minute, publishErr: notConfigured},
+		{name: "failure after not configured logs", after: time.Minute, publishErr: errA, wantErrorLogs: 1},
+	}
+	for _, step := range steps {
+		now = now.Add(step.after)
+		logs = nil
+		am.exportSystem = &scriptedExporter{errs: []error{step.publishErr}}
+		state := &auditExportPublishingState{Errors: map[string]error{}}
+
+		am.startAuditExport(state, "timestamp")
+		am.finishAuditExport(context.Background(), state, "timestamp")
+
+		require.Equal(t, step.wantErrorLogs, countLogs(logs, `"error"=`), "%s: %v", step.name, logs)
+		require.Equal(t, step.wantRecovered, countLogs(logs, "audit export recovered"), "%s: %v", step.name, logs)
+		require.Len(t, logs, step.wantErrorLogs+step.wantRecovered, "%s: %v", step.name, logs)
+	}
+
+	// Each logged error class keeps its full error text.
+	now = now.Add(time.Minute)
+	logs = nil
+	am.exportSystem = &scriptedExporter{errs: []error{errA, errB}}
+	state := &auditExportPublishingState{Errors: map[string]error{}}
+	am.startAuditExport(state, "timestamp")
+	am.finishAuditExport(context.Background(), state, "timestamp")
+	require.Len(t, logs, 1, logs)
+	require.Contains(t, logs[0], errA.Error())
+	require.Contains(t, logs[0], errB.Error())
 }
 
 func Test_hasConstraintInstances(t *testing.T) {

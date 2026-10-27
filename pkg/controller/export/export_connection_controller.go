@@ -349,8 +349,10 @@ func updateOrCreateConnectionPodStatus(ctx context.Context,
 		}
 	}
 
-	generationChanged := connPodStatusObj.Status.ObservedGeneration != connObj.GetGeneration()
-	if generationChanged {
+	// A recreated Connection restarts at generation 1, so also check the UID.
+	connectionChanged := connPodStatusObj.Status.ObservedGeneration != connObj.GetGeneration() ||
+		connPodStatusObj.Status.ConnectionUID != connObj.GetUID()
+	if connectionChanged {
 		connPodStatusObj.Status.PublishStatuses = nil
 		connPodStatusObj.Status.ConnectionErrors = nil
 	}
@@ -363,6 +365,7 @@ func updateOrCreateConnectionPodStatus(ctx context.Context,
 
 	// ObservedGeneration is used to track the generation of the Connection object
 	connPodStatusObj.Status.ObservedGeneration = connObj.GetGeneration()
+	connPodStatusObj.Status.ConnectionUID = connObj.GetUID()
 
 	if shouldCreate {
 		log.Info("Creating new ConnectionPodStatus object", "name", connPodStatusObj.GetName())

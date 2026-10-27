@@ -93,6 +93,8 @@ type Manager struct {
 
 	expansionSystem *expansion.System
 	exportSystem    export.Exporter
+	// Limits audit export error logs across runs.
+	exportLogs logLimiter
 
 	// returns the running pod injected by the main controller
 	getPod func(context.Context) (*corev1.Pod, error)
@@ -1080,7 +1082,7 @@ func (am *Manager) addAuditResponsesToUpdateLists(
 		labels := r.obj.GetLabels()
 		logViolation(am.log, constraint, ea, r.ScopedEnforcementActions, gvk, namespace, name, msg, details, labels)
 		if exportutil.AuditExportEnabledForProcess() {
-			_ = am.publishAuditExport(auditExportPublishingState, violationMsg(constraint, ea, r.ScopedEnforcementActions, gvk, namespace, name, msg, details, labels, timestamp))
+			am.publishAuditExport(auditExportPublishingState, violationMsg(constraint, ea, r.ScopedEnforcementActions, gvk, namespace, name, msg, details, labels, timestamp))
 		}
 		if *emitAuditEvents {
 			log.Info("Warning: Alpha flag emit-audit-events is set to true. This flag may change in the future.")
@@ -1470,43 +1472,45 @@ type auditExportPublishingState struct {
 	notConfigured bool
 }
 
+// maxLoggedErrorClasses caps the error classes named in the summary log line.
+const maxLoggedErrorClasses = 5
+
 func (am *Manager) startAuditExport(state *auditExportPublishingState, timestamp string) {
 	if !exportutil.AuditExportEnabledForProcess() {
 		return
 	}
-	if err := am.publishAuditExport(state, exportutil.ExportMsg{Message: exportutil.AuditStartedMsg, ID: timestamp}); err != nil {
-		am.log.Error(err, "failed to export audit start message")
-	}
+	am.publishAuditExport(state, exportutil.ExportMsg{Message: exportutil.AuditStartedMsg, ID: timestamp})
 }
 
 func (am *Manager) finishAuditExport(ctx context.Context, state *auditExportPublishingState, timestamp string) {
 	if !exportutil.AuditExportEnabledForProcess() {
 		return
 	}
-	if err := am.publishAuditExport(state, exportutil.ExportMsg{Message: exportutil.AuditCompletedMsg, ID: timestamp}); err != nil {
-		am.log.Error(err, "failed to export audit end message")
-	}
+	am.publishAuditExport(state, exportutil.ExportMsg{Message: exportutil.AuditCompletedMsg, ID: timestamp})
 	if state.notConfigured {
+		// The export controller reports the missing connection.
+		am.exportLogs.reset()
 		return
 	}
+	am.logAuditExportResult(state)
 	// At the end of the Audit update the Connection status with any errors collected during publishing
 	reportExportConnectionErrors(ctx, *state, am.log, am.mgr.GetAPIReader(), am.mgr.GetClient(), am.mgr.GetScheme(), am.getPod)
 }
 
-// publishAuditExport publishes msg, or skips it if no audit connection is configured.
-func (am *Manager) publishAuditExport(state *auditExportPublishingState, msg interface{}) error {
+// publishAuditExport publishes msg, or skips it if no audit connection is
+// configured. Errors are collected in state and logged once per run.
+func (am *Manager) publishAuditExport(state *auditExportPublishingState, msg interface{}) {
 	if state.notConfigured {
-		return nil
+		return
 	}
 	err := am.exportSystem.Publish(context.Background(), *exportutil.AuditConnection, *exportutil.AuditChannel, msg)
 	if errors.Is(err, export.ErrConnectionNotConfigured) {
 		state.notConfigured = true
 		am.log.V(logging.DebugLevel).Info("skipping audit export, connection is not configured", "connection", *exportutil.AuditConnection)
-		return nil
+		return
 	}
 	state.recordPublishResult(err)
 	am.reporter.reportAuditExportPublish(err)
-	return err
 }
 
 func (state *auditExportPublishingState) recordPublishResult(err error) {
@@ -1518,6 +1522,40 @@ func (state *auditExportPublishingState) recordPublishResult(err error) {
 	}
 	state.SuccessCount++
 	state.LastSuccessTime = now
+}
+
+// logAuditExportResult logs a run's publish errors in one line, or a recovery
+// line after failures. Unchanged errors go to debug, except a periodic reminder.
+func (am *Manager) logAuditExportResult(state *auditExportPublishingState) {
+	connection := *exportutil.AuditConnection
+	if len(state.Errors) == 0 {
+		if am.exportLogs.succeeded() {
+			am.log.Info("audit export recovered", "connection", connection)
+		}
+		return
+	}
+
+	classes := make([]string, 0, len(state.Errors))
+	for class := range state.Errors {
+		classes = append(classes, class)
+	}
+	sort.Strings(classes)
+	shown := classes[:min(len(classes), maxLoggedErrorClasses)]
+	errs := make([]error, 0, len(shown))
+	for _, class := range shown {
+		errs = append(errs, state.Errors[class])
+	}
+	err := errors.Join(errs...)
+	kv := []interface{}{
+		"connection", connection,
+		"errorClasses", shown,
+		"moreErrorClasses", len(classes) - len(shown),
+	}
+	if am.exportLogs.failed(strings.Join(classes, "\n")) {
+		am.log.Error(err, "failed to export audit violation", kv...)
+		return
+	}
+	am.log.V(logging.DebugLevel).Info("failed to export audit violation", append(kv, "error", err.Error())...)
 }
 
 // Write the export errors to the ConnectionPodStatus.
@@ -1537,8 +1575,6 @@ func reportExportConnectionErrors(
 	}
 	sort.Strings(errorKeys)
 	for _, staticErrMsg := range errorKeys {
-		v := auditExportPublishingState.Errors[staticErrMsg]
-		logger.Error(v, "failed to export audit violation")
 		exportErrors = append(exportErrors, &statusv1alpha1.ConnectionError{
 			Type:    statusv1alpha1.PublishError,
 			Message: staticErrMsg,

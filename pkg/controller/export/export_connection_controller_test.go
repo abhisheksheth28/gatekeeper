@@ -187,6 +187,36 @@ func TestUpdateOrCreateConnectionPodStatusRepairsMetadata(t *testing.T) {
 	require.Len(t, got.OwnerReferences, 1)
 }
 
+func TestUpdateOrCreateConnectionPodStatusResetsStaleConnectionUID(t *testing.T) {
+	ctx := context.Background()
+	pod := fakes.Pod(fakes.WithNamespace(util.GetNamespace()), fakes.WithName("status-pod"), fakes.WithUID("status-pod-uid"))
+	connObj := &connectionv1alpha1.Connection{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "audit-connection-recreated",
+			Namespace:  util.GetNamespace(),
+			UID:        "new-connection-uid",
+			Generation: 1,
+		},
+	}
+	status, err := statusv1alpha1.NewConnectionStatusForPod(pod, connObj.GetNamespace(), connObj.GetName(), k8sscheme.Scheme)
+	require.NoError(t, err)
+	status.Status.ConnectionUID = "old-connection-uid"
+	status.Status.ObservedGeneration = connObj.GetGeneration()
+	status.Status.ConnectionErrors = []*statusv1alpha1.ConnectionError{{Type: statusv1alpha1.UpsertConnectionError, Message: "old error"}}
+	status.Status.PublishStatuses = []statusv1alpha1.ConnectionPublishStatus{{Source: statusv1alpha1.WebhookPublishSource, Active: true}}
+
+	k8sClient := fake.NewClientBuilder().WithScheme(k8sscheme.Scheme).WithObjects(status).Build()
+	getPod := func(context.Context) (*corev1.Pod, error) { return pod, nil }
+
+	require.NoError(t, updateOrCreateConnectionPodStatus(ctx, k8sClient, k8sClient, k8sscheme.Scheme, connObj, nil, nil, getPod))
+
+	got := &statusv1alpha1.ConnectionPodStatus{}
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(status), got))
+	require.Equal(t, connObj.GetUID(), got.Status.ConnectionUID)
+	require.Empty(t, got.Status.ConnectionErrors)
+	require.Empty(t, got.Status.PublishStatuses)
+}
+
 func diskConnectionConfig(path string) map[string]interface{} {
 	return map[string]interface{}{
 		"path":            path,
