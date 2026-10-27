@@ -4,6 +4,8 @@ import (
 	"errors"
 	"flag"
 	"strings"
+
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/operations"
 )
 
 const (
@@ -30,6 +32,22 @@ var (
 // AdmissionConnectionName returns the Connection shared with audit export.
 func AdmissionConnectionName() string {
 	return *AuditConnection
+}
+
+// AuditExportEnabledForProcess reports whether this process publishes audit violations.
+func AuditExportEnabledForProcess() bool {
+	return operations.IsAssigned(operations.Audit) && *ExportEnabled
+}
+
+// AdmissionExportEnabledForProcess reports whether this process publishes admission violations.
+func AdmissionExportEnabledForProcess() bool {
+	return operations.IsAssigned(operations.Webhook) && *AdmissionExportEnabled
+}
+
+// ExportConnectionControllerEnabled reports whether this process needs an export
+// system and the export Connection controller.
+func ExportConnectionControllerEnabled() bool {
+	return AuditExportEnabledForProcess() || AdmissionExportEnabledForProcess()
 }
 
 // AdmissionChannelName returns the channel shared with audit export.

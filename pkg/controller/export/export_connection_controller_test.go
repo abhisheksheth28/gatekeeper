@@ -18,6 +18,7 @@ import (
 	exportutil "github.com/open-policy-agent/gatekeeper/v3/pkg/export/util"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/fakes"
 	anythingtypes "github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/operations"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
 	testclient "github.com/open-policy-agent/gatekeeper/v3/test/clients"
 	"github.com/open-policy-agent/gatekeeper/v3/test/testutils"
@@ -77,6 +78,25 @@ func TestAdderAddRejectsTypedNilExportSystemWhenExportEnabled(t *testing.T) {
 	var typedNilSystem *export.System
 	a := &Adder{ExportSystem: typedNilSystem}
 	require.Error(t, a.Add(nil))
+}
+
+// A pod without the audit or webhook operation must not register the
+// controller, even with both export flags on and no export system.
+func TestAdderAddSkipsProcessWithoutExportOperation(t *testing.T) {
+	origExport := *exportutil.ExportEnabled
+	origAdmission := *exportutil.AdmissionExportEnabled
+	defer func() {
+		*exportutil.ExportEnabled = origExport
+		*exportutil.AdmissionExportEnabled = origAdmission
+	}()
+	*exportutil.ExportEnabled = true
+	*exportutil.AdmissionExportEnabled = true
+	restore, err := operations.SetForTest(operations.Status)
+	require.NoError(t, err)
+	defer restore()
+
+	a := &Adder{ExportSystem: nil}
+	require.NoError(t, a.Add(nil))
 }
 
 // TestIsNilExporterDoesNotPanicOnValueTypeExportSystem guards against a

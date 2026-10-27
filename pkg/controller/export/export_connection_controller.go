@@ -43,7 +43,7 @@ type Adder struct {
 }
 
 func (a *Adder) Add(mgr manager.Manager) error {
-	if !*exportutil.ExportEnabled && !*exportutil.AdmissionExportEnabled {
+	if !exportutil.ExportConnectionControllerEnabled() {
 		log.Info("Export functionality is disabled, skipping export connection controller setup")
 		return nil
 	}
@@ -92,11 +92,6 @@ type Reconciler struct {
 }
 
 func newReconciler(mgr manager.Manager, system export.Exporter, auditConnectionName string, getPod func(context.Context) (*corev1.Pod, error)) *Reconciler {
-	if !*exportutil.ExportEnabled && !*exportutil.AdmissionExportEnabled {
-		log.Info("Export is disabled via flag")
-		return nil
-	}
-
 	log.Info("Warning: Alpha violation export is enabled. This feature may change in the future.")
 
 	return &Reconciler{

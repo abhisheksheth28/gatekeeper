@@ -228,7 +228,7 @@ func (c *nsCache) Get(ctx context.Context, client client.Client, namespace strin
 
 // New creates a new manager for audit.
 func New(mgr manager.Manager, deps *Dependencies) (*Manager, error) {
-	if *exportutil.ExportEnabled && deps.ExportSystem == nil {
+	if exportutil.AuditExportEnabledForProcess() && deps.ExportSystem == nil {
 		return nil, errors.New("audit violation export requires an export system")
 	}
 	reporter, err := newStatsReporter()
@@ -270,7 +270,7 @@ func (am *Manager) audit(ctx context.Context) error {
 		SuccessCount: 0,
 		Errors:       make(map[string]error),
 	}
-	if *exportutil.ExportEnabled {
+	if exportutil.AuditExportEnabledForProcess() {
 		err := am.exportSystem.Publish(context.Background(), *exportutil.AuditConnection, *exportutil.AuditChannel, exportutil.ExportMsg{Message: exportutil.AuditStartedMsg, ID: timestamp})
 		auditExportPublishingState.recordPublishResult(err)
 		if err != nil {
@@ -288,7 +288,7 @@ func (am *Manager) audit(ctx context.Context) error {
 		if err := am.reporter.reportRunEnd(endTime); err != nil {
 			am.log.Error(err, "failed to report run end time")
 		}
-		if *exportutil.ExportEnabled {
+		if exportutil.AuditExportEnabledForProcess() {
 			err := am.exportSystem.Publish(context.Background(), *exportutil.AuditConnection, *exportutil.AuditChannel, exportutil.ExportMsg{Message: exportutil.AuditCompletedMsg, ID: timestamp})
 			auditExportPublishingState.recordPublishResult(err)
 			if err != nil {
@@ -1093,7 +1093,7 @@ func (am *Manager) addAuditResponsesToUpdateLists(
 		details := r.Metadata["details"]
 		labels := r.obj.GetLabels()
 		logViolation(am.log, constraint, ea, r.ScopedEnforcementActions, gvk, namespace, name, msg, details, labels)
-		if *exportutil.ExportEnabled {
+		if exportutil.AuditExportEnabledForProcess() {
 			err := am.exportSystem.Publish(context.Background(), *exportutil.AuditConnection, *exportutil.AuditChannel, violationMsg(constraint, ea, r.ScopedEnforcementActions, gvk, namespace, name, msg, details, labels, timestamp))
 			auditExportPublishingState.recordPublishResult(err)
 		}
