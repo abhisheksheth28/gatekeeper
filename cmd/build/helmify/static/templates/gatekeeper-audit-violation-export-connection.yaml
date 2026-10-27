@@ -1,5 +1,5 @@
 ---
-{{- if and (or .Values.enableViolationExport .Values.enableAdmissionViolationExport) (eq (.Values.exportBackend | default "" | lower) "disk") }}
+{{- if eq (include "gatekeeper.diskConnectionRendered" .) "true" }}
 apiVersion: connection.gatekeeper.sh/v1alpha1
 kind: Connection
 metadata:

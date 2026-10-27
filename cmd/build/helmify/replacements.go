@@ -152,8 +152,8 @@ var replacements = map[string]string{
         - --operation=status
         {{- end }}`,
 
-	"- HELMSUBST_DEPLOYMENT_AUDIT_VIOLATION_EXPORT_ARGS": `{{ if hasKey .Values "enableViolationExport" }}
-        - --enable-violation-export={{ .Values.enableViolationExport }}
+	"- HELMSUBST_DEPLOYMENT_AUDIT_VIOLATION_EXPORT_ARGS": `{{ with include "gatekeeper.exportFlag" (dict "value" .Values.enableViolationExport "default" "") }}
+        - --enable-violation-export={{ . }}
         {{- end }}
         {{ if hasKey .Values.audit "connection" }}
         - --audit-connection={{ .Values.audit.connection }}
