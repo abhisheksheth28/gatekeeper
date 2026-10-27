@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -650,6 +651,71 @@ func TestReconcile_ExportSystem_Failures(t *testing.T) {
 			directK8sClient.Delete(ctx, &connPodStatusObj) // nolint:errcheck
 		}()
 	})
+}
+
+// A Connection without spec is valid in the CRD and must not panic the controller.
+func TestReconcile_ConnectionWithoutSpec(t *testing.T) {
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	defer cancelFunc()
+	g := gomega.NewGomegaWithT(t)
+	mgr, _ := testutils.SetupManager(t, cfg)
+	directK8sClient, err := client.New(cfg, client.Options{Scheme: mgr.GetScheme()})
+	require.NoError(t, err)
+
+	connectionName := "audit-connection-no-spec"
+	getPod := func(_ context.Context) (*corev1.Pod, error) {
+		return fakes.Pod(fakes.WithNamespace("gatekeeper-system"), fakes.WithName("no-pod")), nil
+	}
+	fakeExportSystem := &FakeExportSystem{}
+	reconciler := Reconciler{
+		reader:              directK8sClient,
+		writer:              directK8sClient,
+		scheme:              mgr.GetScheme(),
+		system:              fakeExportSystem,
+		auditConnectionName: connectionName,
+		getPod:              getPod,
+	}
+	request := reconcile.Request{NamespacedName: types.NamespacedName{Name: connectionName, Namespace: util.GetNamespace()}}
+
+	noSpec := &unstructured.Unstructured{}
+	noSpec.SetGroupVersionKind(connectionv1alpha1.GroupVersion.WithKind("Connection"))
+	noSpec.SetName(connectionName)
+	noSpec.SetNamespace(util.GetNamespace())
+	require.NoError(t, directK8sClient.Create(ctx, noSpec))
+
+	pod, _ := getPod(ctx)
+	statusName, err := statusv1alpha1.KeyForConnection(pod.Name, util.GetNamespace(), connectionName)
+	require.NoError(t, err)
+	statusKey := types.NamespacedName{Name: statusName, Namespace: util.GetNamespace()}
+	connPodStatus := &statusv1alpha1.ConnectionPodStatus{}
+	t.Cleanup(func() {
+		_ = directK8sClient.Delete(context.Background(), noSpec)
+		_ = directK8sClient.Delete(context.Background(), connPodStatus)
+	})
+
+	result, err := reconciler.Reconcile(ctx, request)
+	g.Expect(err).ShouldNot(gomega.HaveOccurred())
+	g.Expect(result.Requeue).Should(gomega.BeTrue()) // nolint:staticcheck
+	g.Expect(fakeExportSystem.UpsertConnectionCalledCount).Should(gomega.Equal(0), "the export system must not see an incomplete Connection")
+	g.Expect(directK8sClient.Get(ctx, statusKey, connPodStatus)).Should(gomega.Succeed())
+	g.Expect(connPodStatus.Status.ConnectionErrors).Should(gomega.HaveLen(1))
+	g.Expect(connPodStatus.Status.ConnectionErrors[0].Type).Should(gomega.Equal(statusv1alpha1.UpsertConnectionError))
+	g.Expect(connPodStatus.Status.ConnectionErrors[0].Message).Should(gomega.Equal("spec.config is required"))
+
+	connObj := &connectionv1alpha1.Connection{}
+	require.NoError(t, directK8sClient.Get(ctx, request.NamespacedName, connObj))
+	connObj.Spec = connectionv1alpha1.ConnectionSpec{
+		Driver: disk.Name,
+		Config: &anythingtypes.Anything{Value: diskConnectionConfig(t.TempDir())},
+	}
+	require.NoError(t, directK8sClient.Update(ctx, connObj))
+
+	result, err = reconciler.Reconcile(ctx, request)
+	g.Expect(err).ShouldNot(gomega.HaveOccurred())
+	g.Expect(result.Requeue).Should(gomega.BeFalse()) // nolint:staticcheck
+	g.Expect(fakeExportSystem.UpsertConnectionCalledCount).Should(gomega.Equal(1))
+	g.Expect(directK8sClient.Get(ctx, statusKey, connPodStatus)).Should(gomega.Succeed())
+	g.Expect(connPodStatus.Status.ConnectionErrors).Should(gomega.BeEmpty(), "fixing the Connection clears the error without a restart")
 }
 
 // Mock K8s client to simulate the client failures and impact on the controller.

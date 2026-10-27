@@ -91,6 +91,7 @@ func TestSystem_UpsertConnection(t *testing.T) {
 		newDriver      string
 		setup          func(*System) error
 		wantErr        bool
+		wantErrMsg     string
 	}{
 		{
 			name:           "new connection with supported driver",
@@ -123,6 +124,25 @@ func TestSystem_UpsertConnection(t *testing.T) {
 			newDriver:      "unsupportedDriver",
 			setup:          func(_ *System) error { return nil },
 			wantErr:        true,
+			wantErrMsg:     `driver "unsupportedDriver" is not supported; supported drivers: `,
+		},
+		{
+			name:           "empty driver names the empty value",
+			config:         map[string]interface{}{"component": "pubsub"},
+			connectionName: "conn5",
+			newDriver:      "",
+			setup:          func(_ *System) error { return nil },
+			wantErr:        true,
+			wantErrMsg:     `driver "" is not supported; supported drivers: `,
+		},
+		{
+			name:           "driver names are case sensitive",
+			config:         map[string]interface{}{"component": "pubsub"},
+			connectionName: "conn6",
+			newDriver:      "Dapr",
+			setup:          func(_ *System) error { return nil },
+			wantErr:        true,
+			wantErrMsg:     `driver "Dapr" is not supported; supported drivers: `,
 		},
 		{
 			name:           "update existing connection with different driver",
@@ -149,6 +169,10 @@ func TestSystem_UpsertConnection(t *testing.T) {
 			if (err != nil) != tt.wantErr {
 				t.Errorf("UpsertConnection() error = %v, wantErr %v", err, tt.wantErr)
 			}
+			if tt.wantErrMsg != "" {
+				assert.ErrorContains(t, err, tt.wantErrMsg)
+				assert.NotContains(t, system.connectionToDriver, tt.connectionName)
+			}
 
 			if !tt.wantErr {
 				if driver, ok := system.connectionToDriver[tt.connectionName]; !ok || driver != tt.newDriver {
@@ -157,6 +181,14 @@ func TestSystem_UpsertConnection(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSupportedDriverNamesAreQuotedAndSorted(t *testing.T) {
+	saved := supportedDrivers
+	t.Cleanup(func() { supportedDrivers = saved })
+	supportedDrivers = map[string]driver.Driver{disk.Name: disk.Connections, dapr.Name: dapr.FakeConn}
+
+	assert.Equal(t, `"dapr", "disk"`, supportedDriverNames())
 }
 
 func TestSystem_CloseConnection(t *testing.T) {

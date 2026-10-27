@@ -2,6 +2,7 @@ package export
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -208,7 +209,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		connectionErrors := []*statusv1alpha1.ConnectionError{{Type: statusv1alpha1.UpsertConnectionError, Message: err.Error()}}
 		return reconcile.Result{}, updateOrCreateConnectionPodStatus(ctx, r.reader, r.writer, r.scheme, connObj, connectionErrors, nil, r.getPod)
 	}
-	err = r.system.UpsertConnection(ctx, connObj.Spec.Config.Value, request.Name, connObj.Spec.Driver)
+	// spec is optional in the CRD, so config can be nil.
+	if connObj.Spec.Config == nil || connObj.Spec.Config.Value == nil {
+		err = errors.New("spec.config is required")
+	} else {
+		err = r.system.UpsertConnection(ctx, connObj.Spec.Config.Value, request.Name, connObj.Spec.Driver)
+	}
 	if err != nil {
 		log.Error(err, "failed to upsert connection", "name", request.Name)
 		return reconcile.Result{Requeue: true}, updateOrCreateConnectionPodStatus(ctx, r.reader, r.writer, r.scheme, connObj, []*statusv1alpha1.ConnectionError{{Type: statusv1alpha1.UpsertConnectionError, Message: err.Error()}}, nil, r.getPod)

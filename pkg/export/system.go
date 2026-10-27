@@ -3,6 +3,9 @@ package export
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/export/dapr"
@@ -99,7 +102,16 @@ func (s *System) UpsertConnection(ctx context.Context, config interface{}, conne
 		s.connectionToDriver[connectionName] = newDriver
 		return nil
 	}
-	return fmt.Errorf("driver %s is not supported", newDriver)
+	return fmt.Errorf("driver %q is not supported; supported drivers: %s", newDriver, supportedDriverNames())
+}
+
+func supportedDriverNames() string {
+	names := make([]string, 0, len(supportedDrivers))
+	for name := range supportedDrivers {
+		names = append(names, strconv.Quote(name))
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 func (s *System) CloseConnection(connectionName string) error {

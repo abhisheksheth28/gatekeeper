@@ -2,11 +2,25 @@ name: dapr-export
 on:
   push:
     paths:
-      - "pkg/export/dapr"
+      - ".github/workflows/dapr-export.yaml"
+      - "Makefile"
+      - "main.go"
+      - "pkg/audit/**"
+      - "pkg/export/**"
+      - "pkg/controller/export/**"
+      - "cmd/build/helmify/**"
+      - "manifest_staging/charts/gatekeeper/**"
       - "test/export/**"
   pull_request:
     paths:
-      - "pkg/export/dapr"
+      - ".github/workflows/dapr-export.yaml"
+      - "Makefile"
+      - "main.go"
+      - "pkg/audit/**"
+      - "pkg/export/**"
+      - "pkg/controller/export/**"
+      - "cmd/build/helmify/**"
+      - "manifest_staging/charts/gatekeeper/**"
       - "test/export/**"
 permissions: read-all
 
