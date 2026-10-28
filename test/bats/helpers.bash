@@ -434,3 +434,21 @@ admission_export_connection_ready() {
   [[ "$(jq 'length' <<<"${ready_pods}")" -gt 0 ]] || return 1
   kubectl get connection "${connection}" -n "${GATEKEEPER_NAMESPACE}" -ojson | jq -e --argjson ready "${ready_pods}" '.metadata.generation as $generation | [.status.byPod[]? | select(.observedGeneration == $generation) | select((.operations // []) | index("webhook")) | select(((.connectionErrors // []) | length) == 0) | .id] as $reconciled | ($ready - $reconciled | length) == 0'
 }
+
+audit_logs() {
+  kubectl logs -n "${GATEKEEPER_NAMESPACE}" -l control-plane=audit-controller -c manager --tail=-1
+}
+
+audit_runs_finished_at_least() {
+  local expected="$1"
+  local finished
+  finished="$(audit_logs | grep -c 'audit_finished')"
+  [[ "${finished}" -ge "${expected}" ]]
+}
+
+# Requires the temp curl pod.
+audit_metrics() {
+  local pod_ip
+  pod_ip="$(kubectl -n "${GATEKEEPER_NAMESPACE}" get pod -l control-plane=audit-controller -ojson | jq --raw-output '[.items[].status.podIP][0]' | sed 's#\.#-#g')"
+  kubectl exec temp -- curl -s "http://${pod_ip}.${GATEKEEPER_NAMESPACE}.pod:8888/metrics"
+}

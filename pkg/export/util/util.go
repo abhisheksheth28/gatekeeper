@@ -23,7 +23,7 @@ const (
 var errAdditionalPublishErrorsOmitted = errors.New(AdditionalPublishErrorsOmittedMessage)
 
 var (
-	ExportEnabled          = flag.Bool("enable-violation-export", false, "(alpha) Enable exporting audit violations to external systems")
+	ExportEnabled          = flag.Bool("enable-violation-export", true, "(beta) Enable exporting audit violations. Export starts only when a matching Connection exists. Set to false to opt out.")
 	AuditConnection        = flag.String("audit-connection", defaultConnection, "(alpha) Connection name for exporting audit violation messages. Defaults to audit-connection")
 	AuditChannel           = flag.String("audit-channel", defaultChannel, "(alpha) Channel name for exporting audit violation messages. Defaults to audit-channel")
 	AdmissionExportEnabled = flag.Bool("enable-admission-violation-export", false, "(alpha) Enable exporting admission violations to external systems")

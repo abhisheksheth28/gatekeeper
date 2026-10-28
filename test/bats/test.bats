@@ -1033,6 +1033,38 @@ __expansion_audit_test() {
   run kubectl delete --ignore-not-found -f ${BATS_TESTS_DIR}/constraints/all_ns_must_have_label_provided.yaml
 }
 
+@test "audit export without a connection test" {
+  if [ -n "$ENABLE_EXPORT_TESTS" ]; then
+    skip "skipping test, export tests create a connection"
+  fi
+
+  # Audit export is on by default. Without a Connection, audit skips export quietly.
+  wait_for_process 240 ${SLEEP_TIME} "audit_runs_finished_at_least 3"
+
+  local logs
+  logs="$(audit_logs)"
+  run grep -q 'violation_audited' <<<"${logs}"
+  assert_success
+  run grep -E 'failed to (export audit violation|write export errors|close connection|upsert connection)|unsupported connection|Reconciler error.*export-connection-controller' <<<"${logs}"
+  assert_failure
+
+  run kubectl get connectionpodstatuses -n ${GATEKEEPER_NAMESPACE} -ojson
+  assert_success
+  assert_equal "0" "$(jq '.items | length' <<<"${output}")"
+
+  CLEAN_CMD="kubectl delete pod temp --ignore-not-found; ${CLEAN_CMD}"
+  kubectl get pod temp >/dev/null 2>&1 || kubectl run temp --image=curlimages/curl -- tail -f /dev/null
+  kubectl wait --for=condition=Ready --timeout=60s pod temp
+
+  wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "audit_metrics | grep -qxF 'gatekeeper_export_connection_state{state=\"not_configured\"} 1'"
+  local metrics
+  metrics="$(audit_metrics)"
+  run grep -xF 'gatekeeper_audit_export_published_count_total 0' <<<"${metrics}"
+  assert_success
+  run grep -xF 'gatekeeper_audit_export_publish_error_count_total 0' <<<"${metrics}"
+  assert_success
+}
+
 @test "shutdown delay"  {
   # Get the name of the Gatekeeper pod
   POD_NAME=$(kubectl get pods -n ${GATEKEEPER_NAMESPACE} -l control-plane=controller-manager -o jsonpath='{.items[0].metadata.name}')

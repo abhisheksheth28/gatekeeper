@@ -1081,7 +1081,8 @@ func (am *Manager) addAuditResponsesToUpdateLists(
 		details := r.Metadata["details"]
 		labels := r.obj.GetLabels()
 		logViolation(am.log, constraint, ea, r.ScopedEnforcementActions, gvk, namespace, name, msg, details, labels)
-		if exportutil.AuditExportEnabledForProcess() {
+		// Skip messages that won't be sent.
+		if exportutil.AuditExportEnabledForProcess() && !auditExportPublishingState.notConfigured {
 			am.publishAuditExport(auditExportPublishingState, violationMsg(constraint, ea, r.ScopedEnforcementActions, gvk, namespace, name, msg, details, labels, timestamp))
 		}
 		if *emitAuditEvents {
