@@ -1101,6 +1101,7 @@ func TestAuditExportRun(t *testing.T) {
 	// Each run publishes a start marker, two violations and an end marker.
 	tests := []struct {
 		name              string
+		exportDisabled    bool
 		publishErrs       []error
 		missingConnection bool
 		wantCalls         int
@@ -1109,6 +1110,10 @@ func TestAuditExportRun(t *testing.T) {
 		wantPublishErrors int64
 		wantErrorLogs     int
 	}{
+		{
+			name:           "explicit opt-out with a connection publishes nothing",
+			exportDisabled: true,
+		},
 		{
 			name:        "connection not configured skips the run",
 			publishErrs: []error{notConfigured},
@@ -1139,6 +1144,7 @@ func TestAuditExportRun(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			*exportutil.ExportEnabled = !tc.exportDisabled
 			builder := fake.NewClientBuilder().WithScheme(scheme.Scheme)
 			if !tc.missingConnection {
 				builder = builder.WithObjects(&connectionv1alpha1.Connection{ObjectMeta: metav1.ObjectMeta{Name: *exportutil.AuditConnection, Namespace: util.GetNamespace()}})

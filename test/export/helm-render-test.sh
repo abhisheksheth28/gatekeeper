@@ -56,6 +56,7 @@ check "admission-only disk"                 omitted  yes    disk   no      --set
 check "admission-only disk, audit false"    false    no     disk   no      --set enableAdmissionViolationExport=true --set exportBackend=disk --set enableViolationExport=false
 check "admission string false, disk"        omitted  no     none   no      --set-string enableAdmissionViolationExport=false --set exportBackend=disk
 check "true, disk"                          true     yes    disk   yes     --set enableViolationExport=true --set exportBackend=disk
+check "combined, disk"                      true     yes    disk   yes     --set enableViolationExport=true --set enableAdmissionViolationExport=true --set exportBackend=disk
 check "true, dapr"                          true     no     none   no      --set enableViolationExport=true --set exportBackend=dapr
 
 if [[ "${failures}" -ne 0 ]]; then
